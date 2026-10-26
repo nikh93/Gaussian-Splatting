@@ -27,9 +27,10 @@ class AppSettings(context: Context) {
         get() = prefs.getInt("max_dim", 1600)
         set(v) = prefs.edit().putInt("max_dim", v).apply()
 
+    /** automatic capture is opt-in (new key: earlier versions defaulted to on) */
     var autoCapture: Boolean
-        get() = prefs.getBoolean("auto_capture", true)
-        set(v) = prefs.edit().putBoolean("auto_capture", v).apply()
+        get() = prefs.getBoolean("auto_capture_v2", false)
+        set(v) = prefs.edit().putBoolean("auto_capture_v2", v).apply()
 
     var useDepth: Boolean
         get() = prefs.getBoolean("use_depth", true)

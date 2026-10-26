@@ -139,78 +139,82 @@ class PhotoMarkerRenderer {
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 
-    /**
-     * Fraction (0..1) of the current view covered by the last photo: the last photo's
-     * image rectangle at its scene depth is projected into the current view and
-     * intersected with the screen. Returns null when there is no photo yet.
-     */
+    /** Fraction (0..1) of the current view covered by the last photo, null without photos. */
     fun overlapWithLast(viewProj: FloatArray): Float? {
         val m = markers.lastOrNull() ?: return null
-        val d = m.sceneDepth
-        val intr = m.intr
-        val corners = arrayOf(
-            floatArrayOf(-intr.cx / intr.fx * d, intr.cy / intr.fy * d),
-            floatArrayOf((intr.width - intr.cx) / intr.fx * d, intr.cy / intr.fy * d),
-            floatArrayOf((intr.width - intr.cx) / intr.fx * d, -(intr.height - intr.cy) / intr.fy * d),
-            floatArrayOf(-intr.cx / intr.fx * d, -(intr.height - intr.cy) / intr.fy * d),
-        )
-        var poly = ArrayList<FloatArray>(4)
-        for (c in corners) {
-            val w = toWorld(m.c2w, c[0], c[1], -d)
-            val x = viewProj[0] * w[0] + viewProj[4] * w[1] + viewProj[8] * w[2] + viewProj[12]
-            val y = viewProj[1] * w[0] + viewProj[5] * w[1] + viewProj[9] * w[2] + viewProj[13]
-            val ww = viewProj[3] * w[0] + viewProj[7] * w[1] + viewProj[11] * w[2] + viewProj[15]
-            if (ww <= 1e-4f) return 0f // the photo's scene region is behind the camera
-            poly.add(floatArrayOf(x / ww, y / ww))
-        }
-        // clip against the screen square [-1, 1]^2 (Sutherland-Hodgman)
-        for (edge in 0 until 4) {
-            val out = ArrayList<FloatArray>(poly.size + 4)
+        return overlap(m.c2w, m.intr, m.sceneDepth, viewProj)
+    }
+
+    companion object {
+        /**
+         * Overlap estimate: the photo's image rectangle at its scene depth [depth] is projected
+         * into the current view ([viewProj], column major) and clipped to the screen square.
+         * Returns the covered fraction of the screen (0..1).
+         */
+        fun overlap(c2w: FloatArray, intr: Intrinsics, depth: Float, viewProj: FloatArray): Float {
+            val d = depth
+            val corners = arrayOf(
+                floatArrayOf(-intr.cx / intr.fx * d, intr.cy / intr.fy * d),
+                floatArrayOf((intr.width - intr.cx) / intr.fx * d, intr.cy / intr.fy * d),
+                floatArrayOf((intr.width - intr.cx) / intr.fx * d, -(intr.height - intr.cy) / intr.fy * d),
+                floatArrayOf(-intr.cx / intr.fx * d, -(intr.height - intr.cy) / intr.fy * d),
+            )
+            var poly = ArrayList<FloatArray>(4)
+            for (c in corners) {
+                val w = toWorld(c2w, c[0], c[1], -d)
+                val x = viewProj[0] * w[0] + viewProj[4] * w[1] + viewProj[8] * w[2] + viewProj[12]
+                val y = viewProj[1] * w[0] + viewProj[5] * w[1] + viewProj[9] * w[2] + viewProj[13]
+                val ww = viewProj[3] * w[0] + viewProj[7] * w[1] + viewProj[11] * w[2] + viewProj[15]
+                if (ww <= 1e-4f) return 0f // the photographed region is behind the camera
+                poly.add(floatArrayOf(x / ww, y / ww))
+            }
+            // clip against the screen square [-1, 1]^2 (Sutherland-Hodgman)
+            for (edge in 0 until 4) {
+                val out = ArrayList<FloatArray>(poly.size + 4)
+                for (i in poly.indices) {
+                    val a = poly[i]
+                    val b = poly[(i + 1) % poly.size]
+                    val ina = inside(a, edge)
+                    val inb = inside(b, edge)
+                    if (ina) out.add(a)
+                    if (ina != inb) out.add(intersect(a, b, edge))
+                }
+                poly = out
+                if (poly.isEmpty()) return 0f
+            }
+            var area = 0f
             for (i in poly.indices) {
                 val a = poly[i]
                 val b = poly[(i + 1) % poly.size]
-                val ina = inside(a, edge)
-                val inb = inside(b, edge)
-                if (ina) out.add(a)
-                if (ina != inb) out.add(intersect(a, b, edge))
+                area += a[0] * b[1] - b[0] * a[1]
             }
-            poly = out
-            if (poly.isEmpty()) return 0f
+            return (abs(area) * 0.5f / 4f).coerceIn(0f, 1f)
         }
-        var area = 0f
-        for (i in poly.indices) {
-            val a = poly[i]
-            val b = poly[(i + 1) % poly.size]
-            area += a[0] * b[1] - b[0] * a[1]
+
+        private fun inside(p: FloatArray, edge: Int) = when (edge) {
+            0 -> p[0] >= -1f
+            1 -> p[0] <= 1f
+            2 -> p[1] >= -1f
+            else -> p[1] <= 1f
         }
-        return (abs(area) * 0.5f / 4f).coerceIn(0f, 1f)
-    }
 
-    private fun inside(p: FloatArray, edge: Int) = when (edge) {
-        0 -> p[0] >= -1f
-        1 -> p[0] <= 1f
-        2 -> p[1] >= -1f
-        else -> p[1] <= 1f
-    }
-
-    private fun intersect(a: FloatArray, b: FloatArray, edge: Int): FloatArray {
-        val (axis, bound) = when (edge) {
-            0 -> 0 to -1f
-            1 -> 0 to 1f
-            2 -> 1 to -1f
-            else -> 1 to 1f
+        private fun intersect(a: FloatArray, b: FloatArray, edge: Int): FloatArray {
+            val (axis, bound) = when (edge) {
+                0 -> 0 to -1f
+                1 -> 0 to 1f
+                2 -> 1 to -1f
+                else -> 1 to 1f
+            }
+            val t = (bound - a[axis]) / (b[axis] - a[axis])
+            return floatArrayOf(a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
         }
-        val t = (bound - a[axis]) / (b[axis] - a[axis])
-        return floatArrayOf(a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
-    }
 
-    private fun toWorld(c2w: FloatArray, x: Float, y: Float, z: Float) = floatArrayOf(
-        c2w[0] * x + c2w[4] * y + c2w[8] * z + c2w[12],
-        c2w[1] * x + c2w[5] * y + c2w[9] * z + c2w[13],
-        c2w[2] * x + c2w[6] * y + c2w[10] * z + c2w[14],
-    )
+        fun toWorld(c2w: FloatArray, x: Float, y: Float, z: Float) = floatArrayOf(
+            c2w[0] * x + c2w[4] * y + c2w[8] * z + c2w[12],
+            c2w[1] * x + c2w[5] * y + c2w[9] * z + c2w[13],
+            c2w[2] * x + c2w[6] * y + c2w[10] * z + c2w[14],
+        )
 
-    companion object {
         /** distance of the drawn image plane from the camera centre (metres) */
         private const val MARKER_DEPTH = 0.06f
 

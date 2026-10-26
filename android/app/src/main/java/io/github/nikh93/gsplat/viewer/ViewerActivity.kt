@@ -13,6 +13,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import io.github.nikh93.gsplat.R
 import io.github.nikh93.gsplat.databinding.ActivityViewerBinding
+import io.github.nikh93.gsplat.util.Insets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -45,6 +46,8 @@ class ViewerActivity : AppCompatActivity() {
         binding = ActivityViewerBinding.inflate(layoutInflater)
         setContentView(binding.root)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Insets.pad(binding.topBar, top = true)
+        Insets.pad(binding.controlPanel, bottom = true)
 
         renderer = SplatRenderer(camera)
         renderer.onFirstFrame = { runOnUiThread { binding.loadingPanel.visibility = View.GONE } }

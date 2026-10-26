@@ -10,24 +10,31 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <TextView
-        android:id="@+id/infoText"
-        style="@style/OverlayText"
-        android:layout_width="wrap_content"
+    <FrameLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
-        android:layout_margin="12dp"
-        android:textSize="13sp" />
+        android:layout_gravity="top">
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/toggleControls"
-        style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|end"
-        android:layout_margin="8dp"
-        android:contentDescription="@string/viewer_help"
-        app:icon="@android:drawable/ic_menu_manage" />
+        <TextView
+            android:id="@+id/infoText"
+            style="@style/OverlayText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="start|center_vertical"
+            android:layout_margin="12dp"
+            android:textSize="13sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toggleControls"
+            style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|center_vertical"
+            android:layout_margin="8dp"
+            android:contentDescription="@string/viewer_help"
+            app:icon="@android:drawable/ic_menu_manage" />
+    </FrameLayout>
 
     <LinearLayout
         android:id="@+id/loadingPanel"

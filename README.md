@@ -158,10 +158,10 @@ Alternativ `android/` in Android Studio öffnen und starten.
 ### Ablauf
 
 1. **Neue Aufnahme**: ARCore verfolgt die Position des Handys. Langsam um das Objekt herumgehen,
-   aus mehreren Höhen und Winkeln. Im **Auto**-Modus wird automatisch ein Foto gemacht, sobald
-   das Handy ≥ 7 cm bewegt oder ≥ 10° gedreht wurde (oder die Überlappung unter 70 % fällt) *und*
-   ruhig gehalten wird (gegen Bewegungsunschärfe). Mit **Foto** wird manuell ausgelöst. 60 bis
-   200 Fotos sind ein guter Wert.
+   aus mehreren Höhen und Winkeln. Mit **Foto** wird ausgelöst. Der **Auto**-Modus ist
+   standardmäßig aus. Eingeschaltet macht er ein Foto, sobald die Überlappung mit dem letzten
+   Foto unter 70 % fällt und das Handy ruhig gehalten wird, höchstens eines pro Sekunde.
+   60 bis 200 Fotos sind ein guter Wert.
    **Jedes Foto erscheint im AR-Bild an seiner Aufnahmeposition** als Kamerarahmen mit dem
    Vorschaubild, das letzte Foto ist gelb markiert. So sieht man, welche Bereiche schon abgedeckt
    sind. Oben steht die geschätzte **Überlappung** des aktuellen Bildausschnitts mit dem letzten

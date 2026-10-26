@@ -33,6 +33,7 @@ import io.github.nikh93.gsplat.R
 import io.github.nikh93.gsplat.data.Capture
 import io.github.nikh93.gsplat.data.CaptureRepository
 import io.github.nikh93.gsplat.databinding.ActivityCaptureBinding
+import io.github.nikh93.gsplat.util.Insets
 import java.util.EnumSet
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -65,13 +66,12 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var shownPreviewVersion = -1
 
     @Volatile private var captureRequested = false
-    @Volatile private var autoCapture = true
+    @Volatile private var autoCapture = false
     @Volatile private var useDepth = true
     @Volatile private var finishing = false
     @Volatile private var showPhotos = true
     private var lastOverlap: Float? = null
 
-    private var lastCapturePose: Pose? = null
     private var lastCaptureTime = 0L
     private var prevPose: Pose? = null
     private var prevTimeNs = 0L
@@ -94,6 +94,8 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding = ActivityCaptureBinding.inflate(layoutInflater)
         setContentView(binding.root)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Insets.pad(binding.topPanel, top = true)
+        Insets.pad(binding.bottomPanel, bottom = true)
 
         settings = AppSettings(this)
         repo = CaptureRepository(this)
@@ -304,13 +306,14 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             lastOverlap = photoMarkers.overlapWithLast(viewProj)
             val ov = lastOverlap
             val still = speed < 0.35f && angSpeed < 45f
-            val needPhoto = movedEnough(pose) || (ov != null && ov < AUTO_OVERLAP)
-            val auto = autoCapture && still && needPhoto && now - lastCaptureTime > 400_000_000L &&
-                recorder.pendingJobs < 4
+            // auto mode: a new photo only when the view has moved on far enough that the
+            // overlap with the last photo dropped below AUTO_OVERLAP (the first one when still)
+            val needPhoto = ov == null || ov < AUTO_OVERLAP
+            val auto = autoCapture && still && needPhoto && now - lastCaptureTime > AUTO_MIN_INTERVAL_NS &&
+                recorder.pendingJobs < 3
             if (!finishing && (captureRequested || auto)) {
                 captureRequested = false
                 if (takePhoto(frame, pose)) {
-                    lastCapturePose = pose
                     lastCaptureTime = now
                     runOnUiThread { flash() }
                 }
@@ -337,11 +340,6 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 updateOverlap(ov)
             }
         }
-    }
-
-    private fun movedEnough(pose: Pose): Boolean {
-        val last = lastCapturePose ?: return true
-        return distance(last, pose) > 0.07f || angleDeg(last, pose) > 10f
     }
 
     /** Grabs CPU image + pose + intrinsics (+ depth) of the current frame. */
@@ -514,6 +512,8 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val TAG = "CaptureActivity"
         /** automatic capture also triggers when the overlap with the last photo drops below this */
         private const val AUTO_OVERLAP = 0.7f
+        /** at most one automatic photo per second */
+        private const val AUTO_MIN_INTERVAL_NS = 1_000_000_000L
 
         fun distance(a: Pose, b: Pose): Float {
             val dx = a.tx() - b.tx()
