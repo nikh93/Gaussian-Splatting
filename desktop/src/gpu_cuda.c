@@ -529,7 +529,8 @@ int gs_cuda_init(gs_gpu *g, int device, const char *kernel_dir, int test_build, 
             const char *s = NULL;
             c->cu.GetErrorString(r, &s);
             fprintf(stderr, "[cuda] PTX JIT log:\n%s\n", jit_log);
-            snprintf(err, err_len, "cuModuleLoadData: %s", s ? s : "error");
+            snprintf(err, err_len, "cuModuleLoadData: %s%s", s ? s : "error",
+                     r == 222 ? " - please update the NVIDIA driver" : ""); /* CUDA_ERROR_UNSUPPORTED_PTX_VERSION */
             c->module = NULL;
             goto fail;
         }

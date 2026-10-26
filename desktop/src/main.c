@@ -95,7 +95,11 @@ int main(int argc, char **argv)
     char kernel_path[1100], err[512];
     int device = 0, i, list = 0, selftest = 0;
 
+#ifdef _WIN32
+    setvbuf(stdout, NULL, _IONBF, 0); /* MSVC rejects _IOLBF with size 0 */
+#else
     setvbuf(stdout, NULL, _IOLBF, 0);
+#endif
     gs_train_params_default(&params);
     memset(&cfg, 0, sizeof(cfg));
     cfg.bind_addr = "0.0.0.0";
