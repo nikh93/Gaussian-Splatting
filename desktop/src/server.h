@@ -4,7 +4,7 @@
 #ifndef GS_SERVER_H
 #define GS_SERVER_H
 
-#include "cl_util.h"
+#include "gpu.h"
 #include "trainer.h"
 
 typedef struct {
@@ -13,7 +13,7 @@ typedef struct {
     const char *data_dir;
     const char *token;          /* optional shared secret, NULL = none */
     gs_train_params defaults;   /* defaults for new jobs */
-    gs_cl *cl;
+    gs_gpu *gpu;
 } gs_server_config;
 
 /* Starts the training worker and serves HTTP forever. */

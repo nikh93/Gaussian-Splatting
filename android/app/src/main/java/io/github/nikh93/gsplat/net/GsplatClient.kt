@@ -10,7 +10,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
-data class ServerInfo(val name: String, val version: String, val device: String, val gpuMemoryMb: Long)
+data class ServerInfo(
+    val name: String,
+    val version: String,
+    val backend: String,
+    val device: String,
+    val gpuMemoryMb: Long,
+)
 
 data class JobStatus(
     val id: String,
@@ -113,7 +119,10 @@ class GsplatClient(private val baseUrl: String, private val token: String?) {
 
     suspend fun info(): ServerInfo {
         val j = requestJson("/api/info", "GET")
-        return ServerInfo(j.optString("name"), j.optString("version"), j.optString("device"), j.optLong("gpu_memory_mb"))
+        return ServerInfo(
+            j.optString("name"), j.optString("version"), j.optString("backend", "OpenCL"), j.optString("device"),
+            j.optLong("gpu_memory_mb"),
+        )
     }
 
     suspend fun jobs(): List<JobStatus> {

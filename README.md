@@ -5,11 +5,11 @@ Aufnahme über **Tailscale** an einen Desktop-PC schicken, dort auf der **Grafik
 3D-Gaussian-Splatting-Modell trainieren und das Ergebnis in der App im **3D-Viewer** ansehen.
 
 ```
- Android-App (Kotlin)                                Desktop-PC (reines C11 + OpenCL)
+ Android-App (Kotlin)                                Desktop-PC (reines C11 + CUDA)
 ┌─────────────────────────────┐   Tailscale (WireGuard)  ┌──────────────────────────────────┐
 │ ARCore-Aufnahme             │   HTTP  100.x.y.z:8080   │ gsplat-server                    │
 │  • Fotos (CPU-Bild, JPEG)   │ ───────────────────────► │  • REST-API, Job-Verwaltung      │
-│  • Kamera-Pose je Foto      │  transforms.json,        │  • Trainer auf der GPU (OpenCL): │
+│  • Kamera-Pose je Foto      │  transforms.json,        │  • Trainer auf der GPU (CUDA):   │
 │  • Intrinsik (fx,fy,cx,cy)  │  images/, points3d.ply   │    Projektion, Tile-Rasterizer,  │
 │  • Punktwolke (Tiefe+AR)    │                          │    L1+SSIM-Loss, Backprop, Adam, │
 │ Upload / Status / Download  │ ◄─────────────────────── │    Densification (clone/split/   │
@@ -20,52 +20,64 @@ Aufnahme über **Tailscale** an einen Desktop-PC schicken, dort auf der **Grafik
 | Verzeichnis | Inhalt |
 |---|---|
 | `android/` | Kotlin-App: Aufnahme mit ARCore, Upload/Status/Download, Splat-Viewer |
-| `desktop/` | `gsplat-server` in C11: HTTP-Server, Datensatz-Loader, OpenCL-Trainer, PLY-Export |
-| `desktop/kernels/gsplat.cl` | GPU-Kernel (Vorwärts- und Rückwärtspass des differenzierbaren Rasterizers) |
+| `desktop/` | `gsplat-server` in C11: HTTP-Server, Datensatz-Loader, GPU-Trainer, PLY-Export |
+| `desktop/kernels/gsplat_kernels.h` | GPU-Kernel (Vorwärts- und Rückwärtspass des differenzierbaren Rasterizers), eine Quelle für CUDA und OpenCL |
+| `desktop/kernels/gsplat.cu` | CUDA-Einstieg für die Kernel (NVRTC zur Laufzeit oder `nvcc` → PTX) |
 | `desktop/tools/make_synthetic.py` | erzeugt eine synthetische Test-Aufnahme im App-Format |
 
 ---
 
 ## 1. Desktop-Server (`desktop/`)
 
-Der Server ist in reinem C11 geschrieben. Für die GPU wird **OpenCL 1.2** genutzt, das von
-NVIDIA-, AMD- und Intel-Treibern unterstützt wird. Abhängigkeiten sind nur die OpenCL-Header,
-der ICD-Loader und `stb_image.h` (liegt in `third_party/`, Public Domain) zum JPEG-Dekodieren.
+Der Server ist in reinem C11 geschrieben und rechnet auf einer NVIDIA-GPU mit **CUDA**
+(ausgelegt auf die RTX 3080, sm_86):
+
+- Das Host-Programm nutzt die **CUDA Driver API**. `libcuda.so` bzw. `nvcuda.dll` gehört zum
+  NVIDIA-Treiber und wird zur Laufzeit geladen. Zum Bauen ist daher kein CUDA-SDK nötig, nur ein
+  C-Compiler und CMake.
+- Die Kernel (`kernels/gsplat_kernels.h`) werden beim Start mit **NVRTC** genau für die
+  eingebaute GPU übersetzt (RTX 3080 → `compute_86`). NVRTC kommt mit dem CUDA Toolkit. Ist beim
+  Bauen `nvcc` vorhanden, entsteht zusätzlich ein vorgebautes `gsplat.ptx` als Ausweichlösung.
+- Im Rückwärtspass werden native `atomicAdd`-Operationen auf `float` verwendet.
+- Optional gibt es ein **OpenCL**-Backend aus derselben Kernel-Quelle (AMD/Intel-GPUs oder
+  CPU-Tests). Es wird nur gebaut, wenn das OpenCL-SDK gefunden wird.
+
+Voraussetzung am PC: ein aktueller NVIDIA-Treiber und das
+[CUDA Toolkit 12.x oder 13.x](https://developer.nvidia.com/cuda-downloads) (für NVRTC, ggf. `nvcc`).
+
+### Bauen unter Windows (empfohlen für den Desktop-PC)
+
+Visual Studio 2022 (Workload „Desktopentwicklung mit C++“), CMake und das CUDA Toolkit
+installieren, dann in der „x64 Native Tools Command Prompt“:
+
+```bat
+cd desktop
+cmake -B build
+cmake --build build --config Release
+build\Release\gsplat-server.exe --list-devices
+```
+
+`nvrtc64_*.dll` wird über `%CUDA_PATH%\bin` gefunden, das der CUDA-Installer setzt.
 
 ### Bauen unter Linux
 
 ```bash
-sudo apt install build-essential cmake ocl-icd-opencl-dev opencl-headers
-# plus der OpenCL-Treiber der GPU:
-#   NVIDIA: im proprietären Treiber enthalten (nvidia-opencl-icd)
-#   AMD:    ROCm (rocm-opencl-runtime) oder Mesa rusticl
-#   Intel:  intel-opencl-icd
+sudo apt install build-essential cmake
+# NVIDIA-Treiber + CUDA Toolkit (liefert libnvrtc, nvcc) installieren
 cd desktop
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ./build/gsplat-server --list-devices
 ```
 
-### Bauen unter Windows
-
-Visual Studio 2022 (C/C++-Workload) und CMake installieren. Die OpenCL-Header und die
-`OpenCL.lib` gibt es z. B. über `vcpkg install opencl` oder das Khronos
-[OpenCL-SDK](https://github.com/KhronosGroup/OpenCL-SDK/releases). Die `OpenCL.dll` bringt
-der Grafiktreiber mit.
-
-```bat
-cd desktop
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build build --config Release
-build\Release\gsplat-server.exe --list-devices
-```
-
-Der Build kopiert `kernels/gsplat.cl` neben die ausführbare Datei, weil die Kernel zur Laufzeit
-kompiliert werden.
+Der Build kopiert die Kernel-Quellen nach `build/kernels/`, weil sie zur Laufzeit übersetzt
+werden. CMake-Optionen: `-DGS_WITH_OPENCL=OFF` (nur CUDA), `-DGS_CUDA_ARCH=86` (Architektur des
+vorgebauten PTX).
 
 ### Starten
 
 ```bash
+./build/gsplat-server --list-devices        # sollte die RTX 3080 unter "CUDA devices" zeigen
 ./build/gsplat-server --selftest            # prüft die GPU-Gradienten (Finite Differenzen)
 ./build/gsplat-server --port 8080 --data ./gsplat-data
 # nur über Tailscale erreichbar machen (empfohlen):
@@ -78,7 +90,8 @@ Wichtige Optionen (`--help` zeigt alle):
 
 | Option | Standard | Bedeutung |
 |---|---|---|
-| `--device N` | 0 | OpenCL-Gerät (GPUs werden zuerst gelistet) |
+| `--backend B` | `auto` | `cuda`, `opencl` oder `auto` (CUDA, falls eine NVIDIA-GPU da ist) |
+| `--device N` | 0 | Gerät innerhalb des Backends (`--list-devices`) |
 | `--iterations N` | 30000 | Standard-Iterationen (die App kann pro Job andere vorgeben) |
 | `--max-dim N` | 1600 | Bilder werden auf diese längste Seite verkleinert |
 | `--sh-degree N` | 3 | Grad der Spherical Harmonics (blickabhängige Farbe) |
@@ -179,7 +192,7 @@ Alle Pfade unter `/api`. Wenn der Server mit `--token` gestartet wurde, muss jed
 
 | Methode & Pfad | Beschreibung |
 |---|---|
-| `GET /api/info` | Server-Version, GPU, Speicher |
+| `GET /api/info` | Server-Version, Backend (`CUDA`/`OpenCL`), GPU, Speicher |
 | `GET /api/jobs` | alle Jobs |
 | `POST /api/jobs` | Job anlegen: `{"name", "iterations", "max_dim", "sh_degree"}` → Job |
 | `GET /api/jobs/{id}` | Status: `state` (`uploading`, `queued`, `training`, `done`, `failed`, `cancelled`), `iteration`, `psnr`, `gaussians`, `model_available`, … |
@@ -232,17 +245,22 @@ Der Trainer folgt Kerbl et al., *3D Gaussian Splatting for Real-Time Radiance Fi
 
 ## 7. Getesteter Stand und Grenzen
 
-- **Desktop-Server**: unter Linux gebaut und Ende-zu-Ende getestet, allerdings mit OpenCL auf
-  der CPU (PoCL), weil in der Entwicklungsumgebung keine GPU verfügbar war: Gradienten-Selbsttest,
-  Training auf einer synthetischen Szene (`tools/make_synthetic.py`) und der komplette
-  HTTP-Ablauf (Upload, Training, Download, Token, Pfadprüfung). Der Windows-Code kompiliert mit
-  MinGW, wurde aber nicht auf Windows ausgeführt. Auf einer echten GPU wurde das Training noch
-  nicht laufen gelassen.
-- **Android-App**: der Kotlin-Code wurde gegen die Android-Framework-Klassen typgeprüft, die
+- **CUDA**: Die Kernel werden in der Entwicklungsumgebung mit NVRTC 12.9 für `compute_86`
+  übersetzt und von `ptxas` für sm_86 (RTX 3080) assembliert, ohne Register-Spills. Weil dort keine
+  NVIDIA-GPU verfügbar war, liefen sie noch **nicht auf echter Hardware**. Bitte zuerst
+  `--list-devices` und `--selftest` auf der RTX 3080 laufen lassen.
+- **Kernel-Logik**: CUDA und OpenCL übersetzen dieselbe Quelle. Über das OpenCL-Backend (PoCL auf
+  der CPU) sind der Gradienten-Selbsttest, das Training einer synthetischen Szene
+  (`tools/make_synthetic.py`) und der komplette HTTP-Ablauf getestet.
+- **Windows**: Der Code kompiliert und linkt mit MinGW, wurde aber nicht unter Windows ausgeführt.
+- **Android-App**: Der Kotlin-Code wurde gegen die Android-Framework-Klassen typgeprüft, die
   Viewer-Shader liefen in WebGL2 gegen echte Trainer-Ausgaben. Ein vollständiger Gradle-Build und
   ein Test auf einem Gerät waren in der Umgebung nicht möglich (kein Zugriff auf Google Maven /
   Android SDK). Beim ersten Build in Android Studio können daher noch kleinere Korrekturen nötig
   sein.
+- **Geschwindigkeit**: Tiefensortierung und Tile-Zuordnung laufen pro Iteration auf der CPU
+  (Radix-Sort). Bei sehr vielen Gaussians (> 1 Mio.) ist das der größte Zeitanteil. Eine
+  Sortierung direkt auf der GPU wäre der nächste Optimierungsschritt.
 - Die ARCore-Posen werden direkt verwendet, ohne Nachoptimierung (z. B. per COLMAP).
   Ungenaues Tracking macht das Modell unscharf. Tipps: gleichmäßiges Licht, strukturierte
   Umgebung, langsam bewegen.

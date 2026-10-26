@@ -1,12 +1,12 @@
 /*
- * trainer.h - GPU (OpenCL) gaussian splatting optimisation.
+ * trainer.h - GPU (CUDA / OpenCL) gaussian splatting optimisation.
  */
 #ifndef GS_TRAINER_H
 #define GS_TRAINER_H
 
 #include <stddef.h>
 
-#include "cl_util.h"
+#include "gpu.h"
 #include "dataset.h"
 #include "model.h"
 
@@ -42,10 +42,10 @@ void gs_train_params_default(gs_train_params *p);
 
 /* Trains on `ds` and writes <out_dir>/model.ply and model.splat.
  * Returns 0 on success, 1 if cancelled, -1 on error. */
-int gs_train(gs_cl *cl, const gs_dataset *ds, const gs_train_params *p, const char *out_dir,
+int gs_train(gs_gpu *gpu, const gs_dataset *ds, const gs_train_params *p, const char *out_dir,
              gs_train_control *ctl, char *err, size_t err_len);
 
 /* Finite difference check of the GPU gradients. Returns 0 if it passed. */
-int gs_selftest(gs_cl *cl);
+int gs_selftest(gs_gpu *gpu);
 
 #endif

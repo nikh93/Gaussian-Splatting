@@ -1,5 +1,5 @@
 /*
- * trainer.c - GPU (OpenCL) gaussian splatting optimisation loop.
+ * trainer.c - GPU gaussian splatting optimisation loop (CUDA or OpenCL, see gpu.h).
  *
  * Per iteration:
  *   1. pick a training view, upload its image
@@ -20,24 +20,25 @@
 #include "platform.h"
 
 #define TILE 16
+#define LOCAL_1D 256
 #define NPARAM 5
 static const int DIMS[NPARAM] = {3, 3, 4, 1, GS_SH_STRIDE}; /* means, scales, rots, opacity, sh */
 
 enum { P_MEAN = 0, P_SCALE = 1, P_ROT = 2, P_OPAC = 3, P_SH = 4 };
 
 typedef struct {
-    gs_cl *cl;
-    cl_kernel k_pre, k_fwd, k_ssim_h, k_ssim_v, k_ssim_bh, k_loss, k_bwd, k_pre_bwd, k_adam, k_stats;
+    gs_gpu *gpu;
+    gs_kernel k_pre, k_fwd, k_ssim_h, k_ssim_v, k_ssim_bh, k_loss, k_bwd, k_pre_bwd, k_adam, k_stats;
     int n, cap;
-    cl_mem p[NPARAM], m[NPARAM], v[NPARAM], g[NPARAM];
-    cl_mem mean2d, depths, radii, conic, colors;
-    cl_mem dmean2d, dconic, dopa, dcolor;
-    cl_mem accum, denom, maxr;
+    gs_buf p[NPARAM], m[NPARAM], v[NPARAM], g[NPARAM];
+    gs_buf mean2d, depths, radii, conic, colors;
+    gs_buf dmean2d, dconic, dopa, dcolor;
+    gs_buf accum, denom, maxr;
     /* image sized buffers */
     int max_w, max_h;
-    cl_mem img, final_t, ncontrib, dimg, gt, tmp5, efh, ssim_map, tmp3, cam;
+    gs_buf img, final_t, ncontrib, dimg, gt, tmp5, efh, ssim_map, tmp3, cam;
     /* tiles */
-    cl_mem ranges, plist;
+    gs_buf ranges, plist;
     size_t plist_cap;
     /* host scratch for binning */
     int *h_radii;
@@ -50,7 +51,6 @@ typedef struct {
     int *h_plist;
     size_t h_plist_cap;
     int host_cap;
-    cl_int err;
 } trainer;
 
 typedef struct {
@@ -58,17 +58,44 @@ typedef struct {
     float *a[3][NPARAM]; /* [param, adam m, adam v][buffer] */
 } host_state;
 
-#define CK(call)                                                                                     \
-    do {                                                                                             \
-        cl_int e__ = (call);                                                                         \
-        if (e__ != CL_SUCCESS) {                                                                     \
-            fprintf(stderr, "[cl] %s failed: %s (%s:%d)\n", #call, gs_cl_errstr(e__), __FILE__, __LINE__); \
-            tr->err = e__;                                                                           \
-            goto fail;                                                                               \
-        }                                                                                            \
+/* GPU call that must succeed, otherwise jump to the local `fail` label */
+#define CK(call)                                                                       \
+    do {                                                                               \
+        if ((call) != 0) {                                                             \
+            fprintf(stderr, "[gpu] %s failed (%s:%d)\n", #call, __FILE__, __LINE__); \
+            goto fail;                                                                 \
+        }                                                                              \
     } while (0)
 
-#define ARG(k, i, v) clSetKernelArg((k), (i), sizeof(v), &(v))
+/* kernel argument builders */
+#define BUF(b) gs_arg_buf(tr->gpu, &(b))
+#define VAL(v) val_arg(&(v), sizeof(v))
+#define NARGS(a) ((int)(sizeof(a) / sizeof((a)[0])))
+
+static gs_arg val_arg(const void *p, size_t size)
+{
+    gs_arg a;
+    a.ptr = p;
+    a.size = size;
+    return a;
+}
+
+static int launch1d(trainer *tr, gs_kernel k, size_t n, int nargs, const gs_arg *args)
+{
+    size_t global[3] = {n, 1, 1}, local[3] = {LOCAL_1D, 1, 1};
+    return tr->gpu->ops->launch(tr->gpu, k, 1, global, local, nargs, args);
+}
+
+static int launch_image(trainer *tr, gs_kernel k, int W, int H, int depth, int nargs, const gs_arg *args)
+{
+    size_t global[3], local[3] = {TILE, TILE, 1};
+    global[0] = (size_t)W;
+    global[1] = (size_t)H;
+    global[2] = (size_t)depth;
+    return tr->gpu->ops->launch(tr->gpu, k, depth > 1 ? 3 : 2, global, local, nargs, args);
+}
+
+#define G (tr->gpu->ops)
 
 void gs_train_params_default(gs_train_params *p)
 {
@@ -96,54 +123,48 @@ void gs_train_params_default(gs_train_params *p)
     p->seed = 42;
 }
 
-static cl_mem mkbuf(trainer *tr, size_t bytes)
+static int mkbuf(trainer *tr, gs_buf *b, size_t bytes)
 {
-    cl_int e;
-    cl_mem b = clCreateBuffer(tr->cl->ctx, CL_MEM_READ_WRITE, bytes ? bytes : 4, NULL, &e);
-    if (e != CL_SUCCESS) {
-        fprintf(stderr, "[cl] clCreateBuffer(%lu bytes) failed: %s\n", (unsigned long)bytes, gs_cl_errstr(e));
-        tr->err = e;
-        return NULL;
+    if (G->alloc(tr->gpu, b, bytes) != 0) {
+        fprintf(stderr, "[gpu] allocation of %lu bytes failed\n", (unsigned long)bytes);
+        return -1;
     }
-    return b;
+    return 0;
 }
 
-static void rel(cl_mem *b)
+static void rel(trainer *tr, gs_buf *b)
 {
-    if (*b)
-        clReleaseMemObject(*b);
-    *b = NULL;
+    if (b->u.dev || b->u.ptr)
+        G->free(tr->gpu, b);
+    memset(b, 0, sizeof(*b));
 }
 
-static int fill_zero(trainer *tr, cl_mem b, size_t bytes)
+static int fill_zero(trainer *tr, gs_buf *b, size_t bytes)
 {
-    float zero = 0.f;
-    if (!bytes)
-        return 0;
-    return clEnqueueFillBuffer(tr->cl->queue, b, &zero, sizeof(zero), 0, bytes, 0, NULL, NULL) == CL_SUCCESS ? 0 : -1;
+    return G->zero(tr->gpu, b, bytes);
 }
 
 static void release_gauss(trainer *tr)
 {
     int i;
     for (i = 0; i < NPARAM; i++) {
-        rel(&tr->p[i]);
-        rel(&tr->m[i]);
-        rel(&tr->v[i]);
-        rel(&tr->g[i]);
+        rel(tr, &tr->p[i]);
+        rel(tr, &tr->m[i]);
+        rel(tr, &tr->v[i]);
+        rel(tr, &tr->g[i]);
     }
-    rel(&tr->mean2d);
-    rel(&tr->depths);
-    rel(&tr->radii);
-    rel(&tr->conic);
-    rel(&tr->colors);
-    rel(&tr->dmean2d);
-    rel(&tr->dconic);
-    rel(&tr->dopa);
-    rel(&tr->dcolor);
-    rel(&tr->accum);
-    rel(&tr->denom);
-    rel(&tr->maxr);
+    rel(tr, &tr->mean2d);
+    rel(tr, &tr->depths);
+    rel(tr, &tr->radii);
+    rel(tr, &tr->conic);
+    rel(tr, &tr->colors);
+    rel(tr, &tr->dmean2d);
+    rel(tr, &tr->dconic);
+    rel(tr, &tr->dopa);
+    rel(tr, &tr->dcolor);
+    rel(tr, &tr->accum);
+    rel(tr, &tr->denom);
+    rel(tr, &tr->maxr);
 }
 
 /* (Re)allocates the per gaussian GPU buffers and host scratch for `cap` gaussians. */
@@ -154,14 +175,14 @@ static int alloc_gauss(trainer *tr, int cap)
     release_gauss(tr);
     for (i = 0; i < NPARAM; i++) {
         size_t bytes = c * DIMS[i] * sizeof(float);
-        if (!(tr->p[i] = mkbuf(tr, bytes)) || !(tr->m[i] = mkbuf(tr, bytes)) || !(tr->v[i] = mkbuf(tr, bytes)) ||
-            !(tr->g[i] = mkbuf(tr, bytes)))
+        if (mkbuf(tr, &tr->p[i], bytes) || mkbuf(tr, &tr->m[i], bytes) || mkbuf(tr, &tr->v[i], bytes) ||
+            mkbuf(tr, &tr->g[i], bytes))
             return -1;
     }
-    if (!(tr->mean2d = mkbuf(tr, c * 8)) || !(tr->depths = mkbuf(tr, c * 4)) || !(tr->radii = mkbuf(tr, c * 4)) ||
-        !(tr->conic = mkbuf(tr, c * 16)) || !(tr->colors = mkbuf(tr, c * 12)) || !(tr->dmean2d = mkbuf(tr, c * 8)) ||
-        !(tr->dconic = mkbuf(tr, c * 12)) || !(tr->dopa = mkbuf(tr, c * 4)) || !(tr->dcolor = mkbuf(tr, c * 12)) ||
-        !(tr->accum = mkbuf(tr, c * 4)) || !(tr->denom = mkbuf(tr, c * 4)) || !(tr->maxr = mkbuf(tr, c * 4)))
+    if (mkbuf(tr, &tr->mean2d, c * 8) || mkbuf(tr, &tr->depths, c * 4) || mkbuf(tr, &tr->radii, c * 4) ||
+        mkbuf(tr, &tr->conic, c * 16) || mkbuf(tr, &tr->colors, c * 12) || mkbuf(tr, &tr->dmean2d, c * 8) ||
+        mkbuf(tr, &tr->dconic, c * 12) || mkbuf(tr, &tr->dopa, c * 4) || mkbuf(tr, &tr->dcolor, c * 12) ||
+        mkbuf(tr, &tr->accum, c * 4) || mkbuf(tr, &tr->denom, c * 4) || mkbuf(tr, &tr->maxr, c * 4))
         return -1;
     tr->cap = cap;
     if (cap > tr->host_cap) {
@@ -210,11 +231,8 @@ static int state_download(trainer *tr, host_state *s)
     state_alloc(s, tr->n);
     for (i = 0; i < NPARAM; i++) {
         size_t bytes = (size_t)tr->n * DIMS[i] * sizeof(float);
-        if (!bytes)
-            continue;
-        if (clEnqueueReadBuffer(tr->cl->queue, tr->p[i], CL_TRUE, 0, bytes, s->a[0][i], 0, NULL, NULL) ||
-            clEnqueueReadBuffer(tr->cl->queue, tr->m[i], CL_TRUE, 0, bytes, s->a[1][i], 0, NULL, NULL) ||
-            clEnqueueReadBuffer(tr->cl->queue, tr->v[i], CL_TRUE, 0, bytes, s->a[2][i], 0, NULL, NULL))
+        if (G->read(tr->gpu, &tr->p[i], 0, bytes, s->a[0][i]) || G->read(tr->gpu, &tr->m[i], 0, bytes, s->a[1][i]) ||
+            G->read(tr->gpu, &tr->v[i], 0, bytes, s->a[2][i]))
             return -1;
     }
     return 0;
@@ -222,7 +240,7 @@ static int state_download(trainer *tr, host_state *s)
 
 static int state_upload(trainer *tr, const host_state *s)
 {
-    int i, k;
+    int i;
     if (s->n > tr->cap) {
         int cap = s->n + s->n / 2 + 1024;
         if (alloc_gauss(tr, cap) != 0)
@@ -231,17 +249,13 @@ static int state_upload(trainer *tr, const host_state *s)
     tr->n = s->n;
     for (i = 0; i < NPARAM; i++) {
         size_t bytes = (size_t)s->n * DIMS[i] * sizeof(float);
-        if (!bytes)
-            continue;
-        for (k = 0; k < 3; k++) {
-            cl_mem dst = k == 0 ? tr->p[i] : (k == 1 ? tr->m[i] : tr->v[i]);
-            if (clEnqueueWriteBuffer(tr->cl->queue, dst, CL_TRUE, 0, bytes, s->a[k][i], 0, NULL, NULL))
-                return -1;
-        }
+        if (G->write(tr->gpu, &tr->p[i], 0, bytes, s->a[0][i]) || G->write(tr->gpu, &tr->m[i], 0, bytes, s->a[1][i]) ||
+            G->write(tr->gpu, &tr->v[i], 0, bytes, s->a[2][i]))
+            return -1;
     }
-    fill_zero(tr, tr->accum, (size_t)tr->cap * 4);
-    fill_zero(tr, tr->denom, (size_t)tr->cap * 4);
-    fill_zero(tr, tr->maxr, (size_t)tr->cap * 4);
+    if (fill_zero(tr, &tr->accum, (size_t)tr->cap * 4) || fill_zero(tr, &tr->denom, (size_t)tr->cap * 4) ||
+        fill_zero(tr, &tr->maxr, (size_t)tr->cap * 4))
+        return -1;
     return 0;
 }
 
@@ -307,12 +321,11 @@ static int bin_gaussians(trainer *tr, int W, int H, int *num_visible)
     int gx = (W + TILE - 1) / TILE, gy = (H + TILE - 1) / TILE, ntiles = gx * gy;
     int n = tr->n, i, nv = 0;
     size_t total = 0;
-    cl_command_queue q = tr->cl->queue;
 
     if (n > 0) {
-        CK(clEnqueueReadBuffer(q, tr->radii, CL_FALSE, 0, (size_t)n * 4, tr->h_radii, 0, NULL, NULL));
-        CK(clEnqueueReadBuffer(q, tr->mean2d, CL_FALSE, 0, (size_t)n * 8, tr->h_mean2d, 0, NULL, NULL));
-        CK(clEnqueueReadBuffer(q, tr->depths, CL_TRUE, 0, (size_t)n * 4, tr->h_depth, 0, NULL, NULL));
+        CK(G->read(tr->gpu, &tr->radii, 0, (size_t)n * 4, tr->h_radii));
+        CK(G->read(tr->gpu, &tr->mean2d, 0, (size_t)n * 8, tr->h_mean2d));
+        CK(G->read(tr->gpu, &tr->depths, 0, (size_t)n * 4, tr->h_depth));
     }
     for (i = 0; i < n; i++) {
         if (tr->h_radii[i] > 0) {
@@ -365,16 +378,12 @@ static int bin_gaussians(trainer *tr, int W, int H, int *num_visible)
                 tr->h_plist[tr->h_tile_count[y * gx + x]++] = id;
     }
     if (total > tr->plist_cap) {
-        rel(&tr->plist);
+        rel(tr, &tr->plist);
         tr->plist_cap = total + total / 2 + 1024;
-        if (!(tr->plist = mkbuf(tr, tr->plist_cap * sizeof(int))))
-            goto fail;
+        CK(mkbuf(tr, &tr->plist, tr->plist_cap * sizeof(int)));
     }
-    CK(clEnqueueWriteBuffer(q, tr->ranges, CL_FALSE, 0, sizeof(int) * 2 * (size_t)ntiles, tr->h_ranges, 0, NULL, NULL));
-    if (total)
-        CK(clEnqueueWriteBuffer(q, tr->plist, CL_TRUE, 0, sizeof(int) * total, tr->h_plist, 0, NULL, NULL));
-    else
-        CK(clFinish(q));
+    CK(G->write(tr->gpu, &tr->ranges, 0, sizeof(int) * 2 * (size_t)ntiles, tr->h_ranges));
+    CK(G->write(tr->gpu, &tr->plist, 0, sizeof(int) * total, tr->h_plist));
     *num_visible = nv;
     return 0;
 fail:
@@ -385,13 +394,11 @@ fail:
 
 static int create_kernels(trainer *tr)
 {
-    cl_int e;
-    cl_program p = tr->cl->program;
-#define MK(var, name)                                                                   \
-    tr->var = clCreateKernel(p, name, &e);                                              \
-    if (e != CL_SUCCESS) {                                                              \
-        fprintf(stderr, "[cl] clCreateKernel(%s): %s\n", name, gs_cl_errstr(e));        \
-        return -1;                                                                      \
+#define MK(var, name)                                                       \
+    tr->var = G->kernel(tr->gpu, name);                                     \
+    if (!tr->var) {                                                         \
+        fprintf(stderr, "[gpu] kernel %s not found\n", name);               \
+        return -1;                                                          \
     }
     MK(k_pre, "preprocess");
     MK(k_fwd, "render_fwd");
@@ -409,25 +416,25 @@ static int create_kernels(trainer *tr)
 
 static void trainer_release(trainer *tr)
 {
-    cl_kernel *ks[] = {&tr->k_pre, &tr->k_fwd, &tr->k_ssim_h, &tr->k_ssim_v, &tr->k_ssim_bh,
+    gs_kernel *ks[] = {&tr->k_pre, &tr->k_fwd, &tr->k_ssim_h, &tr->k_ssim_v, &tr->k_ssim_bh,
                        &tr->k_loss, &tr->k_bwd, &tr->k_pre_bwd, &tr->k_adam, &tr->k_stats};
     size_t i;
     for (i = 0; i < sizeof(ks) / sizeof(ks[0]); i++)
         if (*ks[i])
-            clReleaseKernel(*ks[i]);
+            G->kernel_release(tr->gpu, *ks[i]);
     release_gauss(tr);
-    rel(&tr->img);
-    rel(&tr->final_t);
-    rel(&tr->ncontrib);
-    rel(&tr->dimg);
-    rel(&tr->gt);
-    rel(&tr->tmp5);
-    rel(&tr->efh);
-    rel(&tr->ssim_map);
-    rel(&tr->tmp3);
-    rel(&tr->cam);
-    rel(&tr->ranges);
-    rel(&tr->plist);
+    rel(tr, &tr->img);
+    rel(tr, &tr->final_t);
+    rel(tr, &tr->ncontrib);
+    rel(tr, &tr->dimg);
+    rel(tr, &tr->gt);
+    rel(tr, &tr->tmp5);
+    rel(tr, &tr->efh);
+    rel(tr, &tr->ssim_map);
+    rel(tr, &tr->tmp3);
+    rel(tr, &tr->cam);
+    rel(tr, &tr->ranges);
+    rel(tr, &tr->plist);
     free(tr->h_radii);
     free(tr->h_mean2d);
     free(tr->h_depth);
@@ -455,62 +462,30 @@ static void fill_cam(const gs_camera *c, float *out)
     out[20] = (float)c->height;
 }
 
-static size_t round_up(size_t v, size_t m)
-{
-    return (v + m - 1) / m * m;
-}
-
 /* Forward pass for one view: preprocess + binning + render. */
 static int forward_ex(trainer *tr, const gs_camera *c, int sh_deg, const float bg[3], int render_only)
 {
-    cl_command_queue q = tr->cl->queue;
     float camv[24];
     int N = tr->n, W = c->width, H = c->height, nv;
-    size_t gsz[2], lsz[2] = {TILE, TILE};
 
     fill_cam(c, camv);
     if (!render_only)
-        CK(clEnqueueWriteBuffer(q, tr->cam, CL_FALSE, 0, sizeof(camv), camv, 0, NULL, NULL));
+        CK(G->write(tr->gpu, &tr->cam, 0, sizeof(camv), camv));
 
     if (N > 0 && !render_only) {
-        size_t g1 = (size_t)N;
-        cl_kernel k = tr->k_pre;
-        ARG(k, 0, N);
-        ARG(k, 1, tr->p[P_MEAN]);
-        ARG(k, 2, tr->p[P_SCALE]);
-        ARG(k, 3, tr->p[P_ROT]);
-        ARG(k, 4, tr->p[P_OPAC]);
-        ARG(k, 5, tr->p[P_SH]);
-        ARG(k, 6, sh_deg);
-        ARG(k, 7, tr->cam);
-        ARG(k, 8, tr->mean2d);
-        ARG(k, 9, tr->depths);
-        ARG(k, 10, tr->radii);
-        ARG(k, 11, tr->conic);
-        CK(ARG(k, 12, tr->colors));
-        CK(clEnqueueNDRangeKernel(q, k, 1, NULL, &g1, NULL, 0, NULL, NULL));
+        gs_arg a[] = {VAL(N),          BUF(tr->p[P_MEAN]), BUF(tr->p[P_SCALE]), BUF(tr->p[P_ROT]),
+                      BUF(tr->p[P_OPAC]), BUF(tr->p[P_SH]), VAL(sh_deg),       BUF(tr->cam),
+                      BUF(tr->mean2d),  BUF(tr->depths),   BUF(tr->radii),     BUF(tr->conic),
+                      BUF(tr->colors)};
+        CK(launch1d(tr, tr->k_pre, (size_t)N, NARGS(a), a));
     }
     if (!render_only && bin_gaussians(tr, W, H, &nv) != 0)
         goto fail;
-
     {
-        cl_kernel k = tr->k_fwd;
-        ARG(k, 0, tr->ranges);
-        ARG(k, 1, tr->plist);
-        ARG(k, 2, W);
-        ARG(k, 3, H);
-        ARG(k, 4, tr->mean2d);
-        ARG(k, 5, tr->conic);
-        ARG(k, 6, tr->colors);
-        ARG(k, 7, bg[0]);
-        ARG(k, 8, bg[1]);
-        ARG(k, 9, bg[2]);
-        ARG(k, 10, tr->img);
-        ARG(k, 11, tr->final_t);
-        CK(ARG(k, 12, tr->ncontrib));
-        gsz[0] = round_up((size_t)W, TILE);
-        gsz[1] = round_up((size_t)H, TILE);
-        CK(clEnqueueNDRangeKernel(q, k, 2, NULL, gsz, lsz, 0, NULL, NULL));
+        gs_arg a[] = {BUF(tr->ranges), BUF(tr->plist), VAL(W),          VAL(H),           BUF(tr->mean2d),
+                      BUF(tr->conic),  BUF(tr->colors), VAL(bg[0]),     VAL(bg[1]),       VAL(bg[2]),
+                      BUF(tr->img),    BUF(tr->final_t), BUF(tr->ncontrib)};
+        CK(launch_image(tr, tr->k_fwd, W, H, 1, NARGS(a), a));
     }
     return 0;
 fail:
@@ -524,94 +499,39 @@ static int forward(trainer *tr, const gs_camera *c, int sh_deg, const float bg[3
 
 static int loss_and_backward(trainer *tr, const gs_camera *c, int sh_deg, const float bg[3], float lambda)
 {
-    cl_command_queue q = tr->cl->queue;
     int N = tr->n, W = c->width, H = c->height;
-    size_t g3[3] = {(size_t)W, (size_t)H, 3};
-    size_t gsz[2], lsz[2] = {TILE, TILE};
-
     {
-        cl_kernel k = tr->k_ssim_h;
-        ARG(k, 0, W);
-        ARG(k, 1, H);
-        ARG(k, 2, tr->img);
-        ARG(k, 3, tr->gt);
-        CK(ARG(k, 4, tr->tmp5));
-        CK(clEnqueueNDRangeKernel(q, k, 3, NULL, g3, NULL, 0, NULL, NULL));
-        k = tr->k_ssim_v;
-        ARG(k, 0, W);
-        ARG(k, 1, H);
-        ARG(k, 2, tr->tmp5);
-        ARG(k, 3, tr->efh);
-        CK(ARG(k, 4, tr->ssim_map));
-        CK(clEnqueueNDRangeKernel(q, k, 3, NULL, g3, NULL, 0, NULL, NULL));
-        k = tr->k_ssim_bh;
-        ARG(k, 0, W);
-        ARG(k, 1, H);
-        ARG(k, 2, tr->efh);
-        CK(ARG(k, 3, tr->tmp3));
-        CK(clEnqueueNDRangeKernel(q, k, 3, NULL, g3, NULL, 0, NULL, NULL));
-        k = tr->k_loss;
-        ARG(k, 0, W);
-        ARG(k, 1, H);
-        ARG(k, 2, lambda);
-        ARG(k, 3, tr->img);
-        ARG(k, 4, tr->gt);
-        ARG(k, 5, tr->tmp3);
-        CK(ARG(k, 6, tr->dimg));
-        CK(clEnqueueNDRangeKernel(q, k, 3, NULL, g3, NULL, 0, NULL, NULL));
+        gs_arg a1[] = {VAL(W), VAL(H), BUF(tr->img), BUF(tr->gt), BUF(tr->tmp5)};
+        gs_arg a2[] = {VAL(W), VAL(H), BUF(tr->tmp5), BUF(tr->efh), BUF(tr->ssim_map)};
+        gs_arg a3[] = {VAL(W), VAL(H), BUF(tr->efh), BUF(tr->tmp3)};
+        gs_arg a4[] = {VAL(W), VAL(H), VAL(lambda), BUF(tr->img), BUF(tr->gt), BUF(tr->tmp3), BUF(tr->dimg)};
+        CK(launch_image(tr, tr->k_ssim_h, W, H, 3, NARGS(a1), a1));
+        CK(launch_image(tr, tr->k_ssim_v, W, H, 3, NARGS(a2), a2));
+        CK(launch_image(tr, tr->k_ssim_bh, W, H, 3, NARGS(a3), a3));
+        CK(launch_image(tr, tr->k_loss, W, H, 3, NARGS(a4), a4));
     }
     if (N == 0)
         return 0;
 
-    fill_zero(tr, tr->dmean2d, (size_t)N * 8);
-    fill_zero(tr, tr->dconic, (size_t)N * 12);
-    fill_zero(tr, tr->dopa, (size_t)N * 4);
-    fill_zero(tr, tr->dcolor, (size_t)N * 12);
+    CK(fill_zero(tr, &tr->dmean2d, (size_t)N * 8));
+    CK(fill_zero(tr, &tr->dconic, (size_t)N * 12));
+    CK(fill_zero(tr, &tr->dopa, (size_t)N * 4));
+    CK(fill_zero(tr, &tr->dcolor, (size_t)N * 12));
     {
-        cl_kernel k = tr->k_bwd;
-        ARG(k, 0, tr->ranges);
-        ARG(k, 1, tr->plist);
-        ARG(k, 2, W);
-        ARG(k, 3, H);
-        ARG(k, 4, tr->mean2d);
-        ARG(k, 5, tr->conic);
-        ARG(k, 6, tr->colors);
-        ARG(k, 7, bg[0]);
-        ARG(k, 8, bg[1]);
-        ARG(k, 9, bg[2]);
-        ARG(k, 10, tr->final_t);
-        ARG(k, 11, tr->ncontrib);
-        ARG(k, 12, tr->dimg);
-        ARG(k, 13, tr->dmean2d);
-        ARG(k, 14, tr->dconic);
-        ARG(k, 15, tr->dopa);
-        CK(ARG(k, 16, tr->dcolor));
-        gsz[0] = round_up((size_t)W, TILE);
-        gsz[1] = round_up((size_t)H, TILE);
-        CK(clEnqueueNDRangeKernel(q, k, 2, NULL, gsz, lsz, 0, NULL, NULL));
+        gs_arg a[] = {BUF(tr->ranges),  BUF(tr->plist),   VAL(W),           VAL(H),
+                      BUF(tr->mean2d),  BUF(tr->conic),   BUF(tr->colors),  VAL(bg[0]),
+                      VAL(bg[1]),       VAL(bg[2]),       BUF(tr->final_t), BUF(tr->ncontrib),
+                      BUF(tr->dimg),    BUF(tr->dmean2d), BUF(tr->dconic),  BUF(tr->dopa),
+                      BUF(tr->dcolor)};
+        CK(launch_image(tr, tr->k_bwd, W, H, 1, NARGS(a), a));
     }
     {
-        cl_kernel k = tr->k_pre_bwd;
-        size_t g1 = (size_t)N;
-        ARG(k, 0, N);
-        ARG(k, 1, tr->p[P_MEAN]);
-        ARG(k, 2, tr->p[P_SCALE]);
-        ARG(k, 3, tr->p[P_ROT]);
-        ARG(k, 4, tr->p[P_OPAC]);
-        ARG(k, 5, tr->p[P_SH]);
-        ARG(k, 6, sh_deg);
-        ARG(k, 7, tr->cam);
-        ARG(k, 8, tr->radii);
-        ARG(k, 9, tr->dmean2d);
-        ARG(k, 10, tr->dconic);
-        ARG(k, 11, tr->dopa);
-        ARG(k, 12, tr->dcolor);
-        ARG(k, 13, tr->g[P_MEAN]);
-        ARG(k, 14, tr->g[P_SCALE]);
-        ARG(k, 15, tr->g[P_ROT]);
-        ARG(k, 16, tr->g[P_OPAC]);
-        CK(ARG(k, 17, tr->g[P_SH]));
-        CK(clEnqueueNDRangeKernel(q, k, 1, NULL, &g1, NULL, 0, NULL, NULL));
+        gs_arg a[] = {VAL(N),             BUF(tr->p[P_MEAN]), BUF(tr->p[P_SCALE]), BUF(tr->p[P_ROT]),
+                      BUF(tr->p[P_OPAC]), BUF(tr->p[P_SH]),   VAL(sh_deg),         BUF(tr->cam),
+                      BUF(tr->radii),     BUF(tr->dmean2d),   BUF(tr->dconic),     BUF(tr->dopa),
+                      BUF(tr->dcolor),    BUF(tr->g[P_MEAN]), BUF(tr->g[P_SCALE]), BUF(tr->g[P_ROT]),
+                      BUF(tr->g[P_OPAC]), BUF(tr->g[P_SH])};
+        CK(launch1d(tr, tr->k_pre_bwd, (size_t)N, NARGS(a), a));
     }
     return 0;
 fail:
@@ -623,25 +543,14 @@ static int adam_step(trainer *tr, int which, float lr1, float lr2, int group, in
     const float b1 = 0.9f, b2 = 0.999f, eps = 1e-15f;
     float bc1 = 1.f - powf(b1, (float)step), bc2 = 1.f - powf(b2, (float)step);
     int n = tr->n * DIMS[which];
-    size_t g1 = (size_t)n;
-    cl_kernel k = tr->k_adam;
     if (n == 0)
         return 0;
-    ARG(k, 0, n);
-    ARG(k, 1, tr->p[which]);
-    ARG(k, 2, tr->g[which]);
-    ARG(k, 3, tr->m[which]);
-    ARG(k, 4, tr->v[which]);
-    ARG(k, 5, lr1);
-    ARG(k, 6, lr2);
-    ARG(k, 7, group);
-    ARG(k, 8, first);
-    ARG(k, 9, b1);
-    ARG(k, 10, b2);
-    ARG(k, 11, eps);
-    ARG(k, 12, bc1);
-    CK(ARG(k, 13, bc2));
-    CK(clEnqueueNDRangeKernel(tr->cl->queue, k, 1, NULL, &g1, NULL, 0, NULL, NULL));
+    {
+        gs_arg a[] = {VAL(n),     BUF(tr->p[which]), BUF(tr->g[which]), BUF(tr->m[which]), BUF(tr->v[which]),
+                      VAL(lr1),   VAL(lr2),          VAL(group),        VAL(first),        VAL(b1),
+                      VAL(b2),    VAL(eps),          VAL(bc1),          VAL(bc2)};
+        CK(launch1d(tr, tr->k_adam, (size_t)n, NARGS(a), a));
+    }
     return 0;
 fail:
     return -1;
@@ -649,20 +558,14 @@ fail:
 
 static int accumulate_stats(trainer *tr, int W, int H)
 {
-    cl_kernel k = tr->k_stats;
-    size_t g1 = (size_t)tr->n;
     float sx = 0.5f * W, sy = 0.5f * H;
     if (tr->n == 0)
         return 0;
-    ARG(k, 0, tr->n);
-    ARG(k, 1, tr->radii);
-    ARG(k, 2, tr->dmean2d);
-    ARG(k, 3, sx);
-    ARG(k, 4, sy);
-    ARG(k, 5, tr->accum);
-    ARG(k, 6, tr->denom);
-    CK(ARG(k, 7, tr->maxr));
-    CK(clEnqueueNDRangeKernel(tr->cl->queue, k, 1, NULL, &g1, NULL, 0, NULL, NULL));
+    {
+        gs_arg a[] = {VAL(tr->n), BUF(tr->radii), BUF(tr->dmean2d), VAL(sx),
+                      VAL(sy),    BUF(tr->accum), BUF(tr->denom),   BUF(tr->maxr)};
+        CK(launch1d(tr, tr->k_stats, (size_t)tr->n, NARGS(a), a));
+    }
     return 0;
 fail:
     return -1;
@@ -728,9 +631,9 @@ static int densify_and_prune(trainer *tr, const gs_train_params *p, float extent
     denom = (float *)malloc(sizeof(float) * (size_t)n);
     maxr = (float *)malloc(sizeof(float) * (size_t)n);
     mode = (unsigned char *)calloc((size_t)n, 1);
-    if (clEnqueueReadBuffer(tr->cl->queue, tr->accum, CL_FALSE, 0, (size_t)n * 4, accum, 0, NULL, NULL) ||
-        clEnqueueReadBuffer(tr->cl->queue, tr->denom, CL_FALSE, 0, (size_t)n * 4, denom, 0, NULL, NULL) ||
-        clEnqueueReadBuffer(tr->cl->queue, tr->maxr, CL_TRUE, 0, (size_t)n * 4, maxr, 0, NULL, NULL))
+    if (G->read(tr->gpu, &tr->accum, 0, (size_t)n * 4, accum) ||
+        G->read(tr->gpu, &tr->denom, 0, (size_t)n * 4, denom) ||
+        G->read(tr->gpu, &tr->maxr, 0, (size_t)n * 4, maxr))
         goto done;
 
     if (allow_growth) {
@@ -878,8 +781,7 @@ static void image_metrics(trainer *tr, const gs_camera *c, float *l1_out, float 
     int ch;
     if (!img)
         return;
-    if (clEnqueueReadBuffer(tr->cl->queue, tr->img, CL_TRUE, 0, sizeof(float) * 3 * hw, img, 0, NULL, NULL) ==
-        CL_SUCCESS) {
+    if (G->read(tr->gpu, &tr->img, 0, sizeof(float) * 3 * hw, img) == 0) {
         for (ch = 0; ch < 3; ch++)
             for (i = 0; i < hw; i++) {
                 float a = img[ch * hw + i];
@@ -910,8 +812,7 @@ static void write_previews(trainer *tr, const gs_dataset *ds, int sh_deg, const 
         FILE *f;
         int x, y, ch;
         if (forward(tr, c, sh_deg, bg) != 0 ||
-            clEnqueueReadBuffer(tr->cl->queue, tr->img, CL_TRUE, 0, sizeof(float) * 3 * hw, img, 0, NULL, NULL) !=
-                CL_SUCCESS) {
+            G->read(tr->gpu, &tr->img, 0, sizeof(float) * 3 * hw, img) != 0) {
             free(img);
             free(row);
             return;
@@ -938,7 +839,7 @@ static void write_previews(trainer *tr, const gs_dataset *ds, int sh_deg, const 
     }
 }
 
-int gs_train(gs_cl *cl, const gs_dataset *ds, const gs_train_params *p, const char *out_dir,
+int gs_train(gs_gpu *gpu, const gs_dataset *ds, const gs_train_params *p, const char *out_dir,
              gs_train_control *ctl, char *err, size_t err_len)
 {
     trainer trs, *tr = &trs;
@@ -954,11 +855,16 @@ int gs_train(gs_cl *cl, const gs_dataset *ds, const gs_train_params *p, const ch
 
     memset(tr, 0, sizeof(*tr));
     memset(&s, 0, sizeof(s));
-    tr->cl = cl;
+    tr->gpu = gpu;
     bg[0] = bg[1] = bg[2] = p->white_background ? 1.f : 0.f;
     if (densify_until > p->iterations / 2 && p->iterations < 2 * p->densify_until)
         densify_until = p->iterations / 2;
 
+    /* CUDA contexts are per thread: training runs in the server's worker thread */
+    if (G->bind_thread(gpu) != 0) {
+        snprintf(err, err_len, "cannot use the GPU from this thread (%s)", gpu->error);
+        return -1;
+    }
     if (create_kernels(tr) != 0) {
         snprintf(err, err_len, "failed to create kernels");
         goto done;
@@ -974,18 +880,18 @@ int gs_train(gs_cl *cl, const gs_dataset *ds, const gs_train_params *p, const ch
     {
         size_t hw = (size_t)tr->max_w * tr->max_h;
         int tiles = ((tr->max_w + TILE - 1) / TILE) * ((tr->max_h + TILE - 1) / TILE);
-        if (!(tr->img = mkbuf(tr, hw * 12)) || !(tr->final_t = mkbuf(tr, hw * 4)) ||
-            !(tr->ncontrib = mkbuf(tr, hw * 4)) || !(tr->dimg = mkbuf(tr, hw * 12)) || !(tr->gt = mkbuf(tr, hw * 4)) ||
-            !(tr->tmp5 = mkbuf(tr, hw * 4 * 15)) || !(tr->efh = mkbuf(tr, hw * 4 * 9)) ||
-            !(tr->ssim_map = mkbuf(tr, hw * 12)) || !(tr->tmp3 = mkbuf(tr, hw * 4 * 9)) || !(tr->cam = mkbuf(tr, 24 * 4)) ||
-            !(tr->ranges = mkbuf(tr, (size_t)tiles * 8))) {
+        if (mkbuf(tr, &tr->img, hw * 12) || mkbuf(tr, &tr->final_t, hw * 4) ||
+            mkbuf(tr, &tr->ncontrib, hw * 4) || mkbuf(tr, &tr->dimg, hw * 12) || mkbuf(tr, &tr->gt, hw * 4) ||
+            mkbuf(tr, &tr->tmp5, hw * 4 * 15) || mkbuf(tr, &tr->efh, hw * 4 * 9) ||
+            mkbuf(tr, &tr->ssim_map, hw * 12) || mkbuf(tr, &tr->tmp3, hw * 4 * 9) || mkbuf(tr, &tr->cam, 24 * 4) ||
+            mkbuf(tr, &tr->ranges, (size_t)tiles * 8)) {
             snprintf(err, err_len, "out of GPU memory (image buffers %dx%d)", tr->max_w, tr->max_h);
             goto done;
         }
         tr->h_tile_count = (int *)malloc(sizeof(int) * (size_t)(tiles + 1));
         tr->h_ranges = (int *)malloc(sizeof(int) * 2 * (size_t)tiles);
         tr->plist_cap = 1 << 20;
-        if (!(tr->plist = mkbuf(tr, tr->plist_cap * 4))) {
+        if (mkbuf(tr, &tr->plist, tr->plist_cap * 4)) {
             snprintf(err, err_len, "out of GPU memory");
             goto done;
         }
@@ -1007,7 +913,7 @@ int gs_train(gs_cl *cl, const gs_dataset *ds, const gs_train_params *p, const ch
     state_free(&s);
 
     printf("[train] %d views, %d gaussians, extent %.3f, %d iterations on %s\n", ds->num_cams, tr->n, ds->extent,
-           p->iterations, cl->device_name);
+           p->iterations, gpu->device_name);
 
     perm = (int *)malloc(sizeof(int) * (size_t)ds->num_cams);
     perm_pos = ds->num_cams;
@@ -1038,10 +944,9 @@ int gs_train(gs_cl *cl, const gs_dataset *ds, const gs_train_params *p, const ch
         if (p->sh_increase_interval > 0 && step % p->sh_increase_interval == 0 && sh_deg < p->sh_degree)
             sh_deg++;
 
-        if (clEnqueueWriteBuffer(cl->queue, tr->gt, CL_FALSE, 0, (size_t)cam->width * cam->height * 4, cam->rgba, 0,
-                                 NULL, NULL) != CL_SUCCESS ||
+        if (G->write(tr->gpu, &tr->gt, 0, (size_t)cam->width * cam->height * 4, cam->rgba) != 0 ||
             forward(tr, cam, sh_deg, bg) != 0 || loss_and_backward(tr, cam, sh_deg, bg, p->lambda_ssim) != 0) {
-            snprintf(err, err_len, "OpenCL error during iteration %d (%s)", step, gs_cl_errstr(tr->err));
+            snprintf(err, err_len, "GPU error during iteration %d (%s)", step, gpu->error);
             goto done;
         }
 
@@ -1053,7 +958,7 @@ int gs_train(gs_cl *cl, const gs_dataset *ds, const gs_train_params *p, const ch
             adam_step(tr, P_ROT, p->lr_rot, p->lr_rot, 1, 1, step) ||
             adam_step(tr, P_OPAC, p->lr_opacity, p->lr_opacity, 1, 1, step) ||
             adam_step(tr, P_SH, p->lr_sh, p->lr_sh / 20.f, GS_SH_STRIDE, 3, step)) {
-            snprintf(err, err_len, "OpenCL error in optimiser step %d", step);
+            snprintf(err, err_len, "GPU error in optimiser step %d (%s)", step, gpu->error);
             goto done;
         }
 
@@ -1107,7 +1012,7 @@ int gs_train(gs_cl *cl, const gs_dataset *ds, const gs_train_params *p, const ch
     printf("[train] done in %.1f s, %d gaussians\n", gs_now_seconds() - t0, tr->n);
     ret = 0;
 done:
-    clFinish(cl->queue);
+    G->finish(gpu);
     state_free(&s);
     free(perm);
     trainer_release(tr);
@@ -1125,8 +1030,8 @@ static double host_loss(trainer *tr, const gs_camera *c, float lambda)
     float *ss = (float *)malloc(sizeof(float) * 3 * hw);
     double l1 = 0, ssim = 0;
     int ch;
-    clEnqueueReadBuffer(tr->cl->queue, tr->img, CL_TRUE, 0, sizeof(float) * 3 * hw, img, 0, NULL, NULL);
-    clEnqueueReadBuffer(tr->cl->queue, tr->ssim_map, CL_TRUE, 0, sizeof(float) * 3 * hw, ss, 0, NULL, NULL);
+    G->read(tr->gpu, &tr->img, 0, sizeof(float) * 3 * hw, img);
+    G->read(tr->gpu, &tr->ssim_map, 0, sizeof(float) * 3 * hw, ss);
     for (ch = 0; ch < 3; ch++)
         for (i = 0; i < hw; i++) {
             l1 += fabs(img[ch * hw + i] - c->rgba[i * 4 + ch] / 255.0);
@@ -1139,7 +1044,7 @@ static double host_loss(trainer *tr, const gs_camera *c, float lambda)
     return (1.0 - lambda) * l1 + lambda * (1.0 - ssim);
 }
 
-int gs_selftest(gs_cl *cl)
+int gs_selftest(gs_gpu *gpu)
 {
     trainer trs, *tr = &trs;
     gs_camera cam;
@@ -1155,8 +1060,8 @@ int gs_selftest(gs_cl *cl)
 
     memset(tr, 0, sizeof(*tr));
     memset(&cam, 0, sizeof(cam));
-    tr->cl = cl;
-    if (create_kernels(tr) != 0)
+    tr->gpu = gpu;
+    if (G->bind_thread(gpu) != 0 || create_kernels(tr) != 0)
         return -1;
     cam.width = 72;
     cam.height = 56;
@@ -1190,22 +1095,22 @@ int gs_selftest(gs_cl *cl)
     {
         size_t hw = (size_t)cam.width * cam.height;
         int tiles = ((cam.width + TILE - 1) / TILE) * ((cam.height + TILE - 1) / TILE);
-        tr->img = mkbuf(tr, hw * 12);
-        tr->final_t = mkbuf(tr, hw * 4);
-        tr->ncontrib = mkbuf(tr, hw * 4);
-        tr->dimg = mkbuf(tr, hw * 12);
-        tr->gt = mkbuf(tr, hw * 4);
-        tr->tmp5 = mkbuf(tr, hw * 60);
-        tr->efh = mkbuf(tr, hw * 36);
-        tr->ssim_map = mkbuf(tr, hw * 12);
-        tr->tmp3 = mkbuf(tr, hw * 36);
-        tr->cam = mkbuf(tr, 96);
-        tr->ranges = mkbuf(tr, (size_t)tiles * 8);
+        mkbuf(tr, &tr->img, hw * 12);
+        mkbuf(tr, &tr->final_t, hw * 4);
+        mkbuf(tr, &tr->ncontrib, hw * 4);
+        mkbuf(tr, &tr->dimg, hw * 12);
+        mkbuf(tr, &tr->gt, hw * 4);
+        mkbuf(tr, &tr->tmp5, hw * 60);
+        mkbuf(tr, &tr->efh, hw * 36);
+        mkbuf(tr, &tr->ssim_map, hw * 12);
+        mkbuf(tr, &tr->tmp3, hw * 36);
+        mkbuf(tr, &tr->cam, 96);
+        mkbuf(tr, &tr->ranges, (size_t)tiles * 8);
         tr->h_tile_count = (int *)malloc(sizeof(int) * (size_t)(tiles + 1));
         tr->h_ranges = (int *)malloc(sizeof(int) * 2 * (size_t)tiles);
         tr->plist_cap = 4096;
-        tr->plist = mkbuf(tr, tr->plist_cap * 4);
-        clEnqueueWriteBuffer(cl->queue, tr->gt, CL_TRUE, 0, hw * 4, cam.rgba, 0, NULL, NULL);
+        mkbuf(tr, &tr->plist, tr->plist_cap * 4);
+        G->write(tr->gpu, &tr->gt, 0, hw * 4, cam.rgba);
     }
     state_alloc(&s, N);
     for (i = 0; i < N; i++) {
@@ -1229,8 +1134,7 @@ int gs_selftest(gs_cl *cl)
     base = host_loss(tr, &cam, lambda);
     for (b = 0; b < NPARAM; b++) {
         grads[b] = (float *)malloc(sizeof(float) * (size_t)N * DIMS[b]);
-        clEnqueueReadBuffer(cl->queue, tr->g[b], CL_TRUE, 0, sizeof(float) * (size_t)N * DIMS[b], grads[b], 0,
-                            NULL, NULL);
+        G->read(tr->gpu, &tr->g[b], 0, sizeof(float) * (size_t)N * DIMS[b], grads[b]);
     }
     printf("[selftest] base loss %.6f\n", base);
 
@@ -1241,18 +1145,18 @@ int gs_selftest(gs_cl *cl)
         float *dimg = (float *)malloc(sizeof(float) * 3 * hw);
         int bad = 0, cnt = 0, t;
         double max_rel = 0;
-        clEnqueueReadBuffer(cl->queue, tr->img, CL_TRUE, 0, sizeof(float) * 3 * hw, img, 0, NULL, NULL);
-        clEnqueueReadBuffer(cl->queue, tr->dimg, CL_TRUE, 0, sizeof(float) * 3 * hw, dimg, 0, NULL, NULL);
+        G->read(tr->gpu, &tr->img, 0, sizeof(float) * 3 * hw, img);
+        G->read(tr->gpu, &tr->dimg, 0, sizeof(float) * 3 * hw, dimg);
         for (t = 0; t < 40; t++) {
             size_t idx = (size_t)(rnd01(&rng) * 3 * hw) % (3 * hw);
             float orig = img[idx], e = 1e-2f;
             double lp, lm, num, rel;
             img[idx] = orig + e;
-            clEnqueueWriteBuffer(cl->queue, tr->img, CL_TRUE, 0, sizeof(float) * 3 * hw, img, 0, NULL, NULL);
+            G->write(tr->gpu, &tr->img, 0, sizeof(float) * 3 * hw, img);
             loss_and_backward(tr, &cam, sh_deg, bg, lambda);
             lp = host_loss(tr, &cam, lambda);
             img[idx] = orig - e;
-            clEnqueueWriteBuffer(cl->queue, tr->img, CL_TRUE, 0, sizeof(float) * 3 * hw, img, 0, NULL, NULL);
+            G->write(tr->gpu, &tr->img, 0, sizeof(float) * 3 * hw, img);
             loss_and_backward(tr, &cam, sh_deg, bg, lambda);
             lm = host_loss(tr, &cam, lambda);
             img[idx] = orig;
@@ -1270,7 +1174,7 @@ int gs_selftest(gs_cl *cl)
         printf("[selftest] %-9s checked %3d  mismatches(>10%%) %2d  max rel err %.3f\n", "image", cnt, bad, max_rel);
         if (bad > cnt / 10 + 1)
             failures++;
-        clEnqueueWriteBuffer(cl->queue, tr->img, CL_TRUE, 0, sizeof(float) * 3 * hw, img, 0, NULL, NULL);
+        G->write(tr->gpu, &tr->img, 0, sizeof(float) * 3 * hw, img);
         free(img);
         free(dimg);
     }
@@ -1282,10 +1186,10 @@ int gs_selftest(gs_cl *cl)
         float *m2 = (float *)malloc(sizeof(float) * 2 * N), *co = (float *)malloc(sizeof(float) * 4 * N);
         float *gm2 = (float *)malloc(sizeof(float) * 2 * N), *gco = (float *)malloc(sizeof(float) * 3 * N);
         int which;
-        clEnqueueReadBuffer(cl->queue, tr->mean2d, CL_TRUE, 0, sizeof(float) * 2 * N, m2, 0, NULL, NULL);
-        clEnqueueReadBuffer(cl->queue, tr->conic, CL_TRUE, 0, sizeof(float) * 4 * N, co, 0, NULL, NULL);
-        clEnqueueReadBuffer(cl->queue, tr->dmean2d, CL_TRUE, 0, sizeof(float) * 2 * N, gm2, 0, NULL, NULL);
-        clEnqueueReadBuffer(cl->queue, tr->dconic, CL_TRUE, 0, sizeof(float) * 3 * N, gco, 0, NULL, NULL);
+        G->read(tr->gpu, &tr->mean2d, 0, sizeof(float) * 2 * N, m2);
+        G->read(tr->gpu, &tr->conic, 0, sizeof(float) * 4 * N, co);
+        G->read(tr->gpu, &tr->dmean2d, 0, sizeof(float) * 2 * N, gm2);
+        G->read(tr->gpu, &tr->dconic, 0, sizeof(float) * 3 * N, gco);
         for (which = 0; which < 2; which++) {
             int bad = 0, cnt = 0, k, nel = which == 0 ? 2 : 3;
             double max_rel = 0;
@@ -1296,20 +1200,20 @@ int gs_selftest(gs_cl *cl)
                     float orig = arr[idx];
                     float e = which == 0 ? 0.05f : fabsf(orig) * 0.01f + 1e-6f;
                     double lp, lm, num, ana, rel;
-                    cl_mem buf = which == 0 ? tr->mean2d : tr->conic;
+                    gs_buf *buf = which == 0 ? &tr->mean2d : &tr->conic;
                     size_t bytes = sizeof(float) * (which == 0 ? 2 : 4) * N;
                     arr[idx] = orig + e;
-                    clEnqueueWriteBuffer(cl->queue, buf, CL_TRUE, 0, bytes, arr, 0, NULL, NULL);
+                    G->write(tr->gpu, buf, 0, bytes, arr);
                     forward_ex(tr, &cam, sh_deg, bg, 1);
                     loss_and_backward(tr, &cam, sh_deg, bg, lambda);
                     lp = host_loss(tr, &cam, lambda);
                     arr[idx] = orig - e;
-                    clEnqueueWriteBuffer(cl->queue, buf, CL_TRUE, 0, bytes, arr, 0, NULL, NULL);
+                    G->write(tr->gpu, buf, 0, bytes, arr);
                     forward_ex(tr, &cam, sh_deg, bg, 1);
                     loss_and_backward(tr, &cam, sh_deg, bg, lambda);
                     lm = host_loss(tr, &cam, lambda);
                     arr[idx] = orig;
-                    clEnqueueWriteBuffer(cl->queue, buf, CL_TRUE, 0, bytes, arr, 0, NULL, NULL);
+                    G->write(tr->gpu, buf, 0, bytes, arr);
                     num = (lp - lm) / (2.0 * e);
                     ana = which == 0 ? gm2[2 * i + k] : gco[3 * i + k];
                     if (fabs(num) < 1e-7 && fabs(ana) < 1e-7)

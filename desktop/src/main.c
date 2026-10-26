@@ -1,5 +1,5 @@
 /*
- * main.c - gsplat-server: Gaussian Splatting training server (C11 + OpenCL).
+ * main.c - gsplat-server: Gaussian Splatting training server (C11, GPU via CUDA or OpenCL).
  *
  *   gsplat-server [--port 8080] [--data ./gsplat-data]      run the server for the app
  *   gsplat-server --train <capture dir> --out <dir>           train one capture offline
@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cl_util.h"
+#include "gpu.h"
 #include "dataset.h"
 #include "platform.h"
 #include "server.h"
@@ -21,7 +21,7 @@
 
 static void usage(void)
 {
-    printf("gsplat-server - Gaussian Splatting training on the GPU (OpenCL)\n\n"
+    printf("gsplat-server - Gaussian Splatting training on the GPU (CUDA / OpenCL)\n\n"
            "Server mode (default):\n"
            "  --bind ADDR          address to listen on (default 0.0.0.0; use your Tailscale IP to\n"
            "                       accept connections from the tailnet only)\n"
@@ -41,35 +41,33 @@ static void usage(void)
            "  --max-gaussians N    upper bound for densification (default 3000000)\n"
            "  --white-background   train against a white instead of black background\n"
            "\n"
-           "OpenCL:\n"
-           "  --device N           OpenCL device index (see --list-devices, default 0 = first GPU)\n"
-           "  --kernels FILE       path to gsplat.cl\n"
-           "  --list-devices       list OpenCL devices and exit\n"
+           "GPU:\n"
+           "  --backend B          cuda | opencl | auto (default auto: CUDA if an NVIDIA GPU is present)\n"
+           "  --device N           device index within the backend (see --list-devices, default 0)\n"
+           "  --kernels DIR        directory containing gsplat_kernels.h\n"
+           "  --list-devices       list CUDA and OpenCL devices and exit\n"
            "  --selftest           check the GPU gradients against finite differences\n");
 }
 
-static int find_kernels(const char *explicit_path, char *out, size_t len)
+/* finds the directory holding gsplat_kernels.h */
+static int find_kernels(const char *explicit_dir, char *out, size_t len)
 {
-    char exe[1024];
+    char exe[1024], probe[1200];
+    char c0[1100], c1[1100];
     const char *candidates[6];
-    char c0[1100], c1[1100], c2[1100];
     int i;
-    if (explicit_path) {
-        snprintf(out, len, "%s", explicit_path);
-        return gs_file_exists(out) ? 0 : -1;
-    }
     gs_exe_dir(exe, sizeof(exe));
-    snprintf(c0, sizeof(c0), "%skernels/gsplat.cl", exe);
-    snprintf(c1, sizeof(c1), "%s../kernels/gsplat.cl", exe);
-    snprintf(c2, sizeof(c2), "%s/gsplat.cl", GS_KERNEL_DIR);
-    candidates[0] = c0;
-    candidates[1] = c1;
-    candidates[2] = c2;
-    candidates[3] = "kernels/gsplat.cl";
-    candidates[4] = "../kernels/gsplat.cl";
+    snprintf(c0, sizeof(c0), "%skernels", exe);
+    snprintf(c1, sizeof(c1), "%s../kernels", exe);
+    candidates[0] = explicit_dir ? explicit_dir : c0;
+    candidates[1] = explicit_dir ? NULL : c1;
+    candidates[2] = GS_KERNEL_DIR;
+    candidates[3] = "kernels";
+    candidates[4] = "../kernels";
     candidates[5] = NULL;
     for (i = 0; candidates[i]; i++) {
-        if (gs_file_exists(candidates[i])) {
+        snprintf(probe, sizeof(probe), "%s/gsplat_kernels.h", candidates[i]);
+        if (gs_file_exists(probe)) {
             snprintf(out, len, "%s", candidates[i]);
             return 0;
         }
@@ -91,7 +89,8 @@ int main(int argc, char **argv)
 {
     gs_server_config cfg;
     gs_train_params params;
-    gs_cl cl;
+    gs_gpu gpu;
+    gs_backend backend = GS_BACKEND_AUTO;
     const char *train_dir = NULL, *out_dir = NULL, *kernel_arg = NULL;
     char kernel_path[1100], err[512];
     int device = 0, i, list = 0, selftest = 0;
@@ -150,6 +149,18 @@ int main(int argc, char **argv)
             params.preview_dir = v;
         } else if (!strcmp(a, "--white-background")) {
             params.white_background = 1;
+        } else if (!strcmp(a, "--backend")) {
+            NEEDV();
+            if (!strcmp(v, "cuda"))
+                backend = GS_BACKEND_CUDA;
+            else if (!strcmp(v, "opencl"))
+                backend = GS_BACKEND_OPENCL;
+            else if (!strcmp(v, "auto"))
+                backend = GS_BACKEND_AUTO;
+            else {
+                fprintf(stderr, "unknown backend %s (cuda, opencl, auto)\n", v);
+                return 2;
+            }
         } else if (!strcmp(a, "--device")) {
             NEEDV();
             device = atoi(v);
@@ -172,26 +183,25 @@ int main(int argc, char **argv)
         params.densify_until = params.iterations / 2;
 
     if (list) {
-        printf("OpenCL devices:\n");
-        gs_cl_list_devices();
+        gs_gpu_list_devices();
         return 0;
     }
     if (find_kernels(kernel_arg, kernel_path, sizeof(kernel_path)) != 0) {
-        fprintf(stderr, "cannot find kernels/gsplat.cl (use --kernels)\n");
+        fprintf(stderr, "cannot find the kernel directory (gsplat_kernels.h); use --kernels DIR\n");
         return 1;
     }
     /* the self test needs a smooth loss: no tile culling, no alpha cut-off */
-    if (gs_cl_init(&cl, device, kernel_path, selftest ? "-DGS_FULL_TILES" : NULL, err, sizeof(err)) != 0) {
-        fprintf(stderr, "OpenCL initialisation failed: %s\n", err);
-        fprintf(stderr, "Available devices:\n");
-        gs_cl_list_devices();
+    if (gs_gpu_init(&gpu, backend, device, kernel_path, selftest, err, sizeof(err)) != 0) {
+        fprintf(stderr, "GPU initialisation failed: %s\n", err);
+        gs_gpu_list_devices();
         return 1;
     }
-    printf("[gpu] %s (%s, %llu MB)\n", cl.device_name, cl.platform_name, (unsigned long long)(cl.global_mem >> 20));
+    printf("[gpu] %s: %s (%s, %llu MB)\n", gs_backend_name(gpu.backend), gpu.device_name, gpu.platform_name,
+           (unsigned long long)(gpu.global_mem >> 20));
 
     if (selftest) {
-        int r = gs_selftest(&cl);
-        gs_cl_release(&cl);
+        int r = gs_selftest(&gpu);
+        gs_gpu_release(&gpu);
         return r;
     }
 
@@ -207,20 +217,20 @@ int main(int argc, char **argv)
         gs_mkdirs(out_dir);
         if (gs_dataset_load(&ds, train_dir, params.max_dim, err, sizeof(err)) != 0) {
             fprintf(stderr, "cannot load capture: %s\n", err);
-            gs_cl_release(&cl);
+            gs_gpu_release(&gpu);
             return 1;
         }
         printf("[data] %d views (%dx%d), %d points\n", ds.num_cams, ds.cams[0].width, ds.cams[0].height,
                ds.num_points);
         memset(&ctl, 0, sizeof(ctl));
         ctl.progress = offline_progress;
-        r = gs_train(&cl, &ds, &params, out_dir, &ctl, err, sizeof(err));
+        r = gs_train(&gpu, &ds, &params, out_dir, &ctl, err, sizeof(err));
         if (r != 0)
             fprintf(stderr, "training failed: %s\n", err);
         else
             printf("model written to %s/model.ply and %s/model.splat\n", out_dir, out_dir);
         gs_dataset_free(&ds);
-        gs_cl_release(&cl);
+        gs_gpu_release(&gpu);
         return r == 0 ? 0 : 1;
     }
 
@@ -229,7 +239,7 @@ int main(int argc, char **argv)
         return 1;
     }
     cfg.defaults = params;
-    cfg.cl = &cl;
+    cfg.gpu = &gpu;
     printf("[server] point the app to http://<tailscale-ip>:%d\n", cfg.port);
     return gs_server_run(&cfg) == 0 ? 0 : 1;
 }

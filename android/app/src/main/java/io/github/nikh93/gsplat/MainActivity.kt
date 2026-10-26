@@ -103,7 +103,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             binding.connectionStatus.text = try {
                 val info = settings.client().info()
-                getString(R.string.connection_ok, "${info.device} (${info.gpuMemoryMb} MB)")
+                getString(R.string.connection_ok, "${info.device} (${info.backend}, ${info.gpuMemoryMb} MB)")
             } catch (e: Exception) {
                 getString(R.string.connection_failed, e.message ?: e.javaClass.simpleName)
             }

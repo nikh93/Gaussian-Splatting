@@ -24,7 +24,7 @@
 #include "json.h"
 #include "platform.h"
 
-#define SERVER_VERSION "1.0.0"
+#define SERVER_VERSION "1.1.0"
 #define MAX_UPLOAD (512LL << 20)
 
 typedef struct {
@@ -288,7 +288,7 @@ static void worker(void *arg)
                 g_running_ctl = &ctl;
                 ctl.cancel = j->cancel;
                 gs_mutex_unlock(&g_lock);
-                r = gs_train(g_cfg->cl, &ds, &p, out_dir, &ctl, err, sizeof(err));
+                r = gs_train(g_cfg->gpu, &ds, &p, out_dir, &ctl, err, sizeof(err));
                 gs_mutex_lock(&g_lock);
                 g_running_ctl = NULL;
                 gs_mutex_unlock(&g_lock);
@@ -333,12 +333,14 @@ static void handle_info(http_request *req)
 {
     sbuf b;
     sb_init(&b);
-    sb_append(&b, "{\"name\":\"gsplat-server\",\"version\":\"" SERVER_VERSION "\",\"device\":");
-    sb_json_string(&b, g_cfg->cl->device_name);
+    sb_append(&b, "{\"name\":\"gsplat-server\",\"version\":\"" SERVER_VERSION "\",\"backend\":");
+    sb_json_string(&b, gs_backend_name(g_cfg->gpu->backend));
+    sb_append(&b, ",\"device\":");
+    sb_json_string(&b, g_cfg->gpu->device_name);
     sb_append(&b, ",\"platform\":");
-    sb_json_string(&b, g_cfg->cl->platform_name);
+    sb_json_string(&b, g_cfg->gpu->platform_name);
     sb_printf(&b, ",\"gpu_memory_mb\":%llu,\"default_iterations\":%d,\"default_max_dim\":%d,\"auth\":%s}",
-              (unsigned long long)(g_cfg->cl->global_mem >> 20), g_cfg->defaults.iterations, g_cfg->defaults.max_dim,
+              (unsigned long long)(g_cfg->gpu->global_mem >> 20), g_cfg->defaults.iterations, g_cfg->defaults.max_dim,
               g_cfg->token ? "true" : "false");
     http_respond_json(req, 200, b.data);
     sb_free(&b);
@@ -524,7 +526,7 @@ static void handle_index(http_request *req)
                   "<style>body{font-family:sans-serif;margin:2em;background:#111;color:#eee}"
                   "td,th{padding:4px 10px;text-align:left}a{color:#8cf}</style></head><body>"
                   "<h2>Gaussian Splatting server</h2><p>Device: ");
-    sb_append(&b, g_cfg->cl->device_name);
+    sb_append(&b, g_cfg->gpu->device_name);
     sb_append(&b, "</p><table><tr><th>Job</th><th>Name</th><th>State</th><th>Progress</th><th>PSNR</th>"
                   "<th>Gaussians</th><th>Model</th></tr>");
     gs_mutex_lock(&g_lock);
