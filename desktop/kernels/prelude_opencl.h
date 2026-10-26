@@ -27,6 +27,12 @@
 #define I_MIN min
 #define I_MAX max
 
+#define BLOCK1D_KERNEL __kernel __attribute__((reqd_work_group_size(256, 1, 1)))
+#define SHARED_PTR __local
+#define F_LOG log
+#define F_COS cos
+#define F_AS_U(x) as_uint(x)
+
 #define SHARED_INC(p) atomic_inc(p)
 #define ATOMIC_ADD(p, v) gs_atomic_add_f((p), (v))
 

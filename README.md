@@ -231,17 +231,22 @@ Der Trainer folgt Kerbl et al., *3D Gaussian Splatting for Real-Time Radiance Fi
 - Parameter pro Gaussian: Position, log-Skalierung, Rotation (Quaternion), Opazität (Logit),
   Spherical Harmonics bis Grad 3. Initialisierung aus `points3d.ply`, Skalierung aus dem
   mittleren Abstand der 3 nächsten Nachbarn.
-- Pro Iteration (GPU): Projektion und EWA-Kovarianz, Tiefensortierung und Zuordnung zu
-  16×16-Tiles (CPU, Radix-Sort), Alpha-Compositing pro Tile, Loss `0.8·L1 + 0.2·(1−SSIM)`,
-  analytischer Rückwärtspass durch Rasterizer, Projektion, Kovarianz und SH, dann Adam.
-- Densification alle 100 Iterationen (500 bis 15000): Klonen kleiner bzw. Teilen großer Gaussians
-  mit großem Bildraum-Gradienten, Entfernen transparenter oder zu großer. Alle 3000 Iterationen
-  wird die Opazität zurückgesetzt. Die Positions-Lernrate fällt exponentiell und ist an die
-  Szenengröße angepasst.
+- Pro Iteration läuft alles auf der GPU: Projektion und EWA-Kovarianz; Tiefensortierung
+  (stabiler Radix-Sort); Erzeugen der (Tile, Gaussian)-Paare über einen Prefix-Scan;
+  Sortierung nach 16×16-Tile und Bestimmung der Tile-Bereiche; Alpha-Compositing pro Tile;
+  Loss `0.8·L1 + 0.2·(1−SSIM)`; analytischer Rückwärtspass durch Rasterizer, Projektion,
+  Kovarianz und SH; Adam. Pro Iteration liest der Host nur die Anzahl der Paare zurück.
+- Die Trainingsfotos liegen dauerhaft im GPU-Speicher, wenn sie in 30 % davon passen (bei
+  10 GB etwa 750 Fotos in 1600×1200). Sonst wird pro Iteration ein Foto hochgeladen.
+- Densification alle 100 Iterationen (500 bis 15000), ebenfalls komplett auf der GPU: Klonen
+  kleiner bzw. Teilen großer Gaussians mit großem Bildraum-Gradienten, Entfernen transparenter
+  oder zu großer, Kompaktierung per Prefix-Scan. Alle 3000 Iterationen wird die Opazität
+  zurückgesetzt. Die Positions-Lernrate fällt exponentiell und ist an die Szenengröße angepasst.
 - Zwischenstände werden alle 5000 Iterationen als `model.ply` geschrieben und können schon
   während des Trainings geladen werden.
 
-`--selftest` vergleicht die analytischen GPU-Gradienten mit finiten Differenzen.
+`--selftest` vergleicht die analytischen GPU-Gradienten mit finiten Differenzen. Außerdem prüft
+er Scan, Radix-Sort, Binning und Densification der GPU gegen CPU-Referenzen.
 
 ## 7. Getesteter Stand und Grenzen
 
@@ -250,17 +255,19 @@ Der Trainer folgt Kerbl et al., *3D Gaussian Splatting for Real-Time Radiance Fi
   NVIDIA-GPU verfügbar war, liefen sie noch **nicht auf echter Hardware**. Bitte zuerst
   `--list-devices` und `--selftest` auf der RTX 3080 laufen lassen.
 - **Kernel-Logik**: CUDA und OpenCL übersetzen dieselbe Quelle. Über das OpenCL-Backend (PoCL auf
-  der CPU) sind der Gradienten-Selbsttest, das Training einer synthetischen Szene
-  (`tools/make_synthetic.py`) und der komplette HTTP-Ablauf getestet.
+  der CPU) sind der Gradienten-Selbsttest, die GPU-Sortierung und -Densification, das Training
+  einer synthetischen Szene
+  (`tools/make_synthetic.py`) und der komplette HTTP-Ablauf getestet. Wie schnell das Training
+  auf der RTX 3080 tatsächlich ist, ist deshalb noch nicht gemessen.
 - **Windows**: Der Code kompiliert und linkt mit MinGW, wurde aber nicht unter Windows ausgeführt.
 - **Android-App**: Der Kotlin-Code wurde gegen die Android-Framework-Klassen typgeprüft, die
   Viewer-Shader liefen in WebGL2 gegen echte Trainer-Ausgaben. Ein vollständiger Gradle-Build und
   ein Test auf einem Gerät waren in der Umgebung nicht möglich (kein Zugriff auf Google Maven /
   Android SDK). Beim ersten Build in Android Studio können daher noch kleinere Korrekturen nötig
   sein.
-- **Geschwindigkeit**: Tiefensortierung und Tile-Zuordnung laufen pro Iteration auf der CPU
-  (Radix-Sort). Bei sehr vielen Gaussians (> 1 Mio.) ist das der größte Zeitanteil. Eine
-  Sortierung direkt auf der GPU wäre der nächste Optimierungsschritt.
+- **Auf der CPU bleiben** nur Dinge außerhalb der Trainingsschleife: das Laden und Dekodieren
+  der Fotos, die Initialisierung (k-nächste-Nachbarn) und das Speichern des Modells (alle 5000
+  Iterationen).
 - Die ARCore-Posen werden direkt verwendet, ohne Nachoptimierung (z. B. per COLMAP).
   Ungenaues Tracking macht das Modell unscharf. Tipps: gleichmäßiges Licht, strukturierte
   Umgebung, langsam bewegen.

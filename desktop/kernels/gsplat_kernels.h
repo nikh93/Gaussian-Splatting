@@ -194,22 +194,37 @@ DEVICE int compute_geom(int i, GLOBAL const float *means, GLOBAL const float *lo
     return 1;
 }
 
+/* Tile rectangle [x0,x1) x [y0,y1) covered by a splat (same formula everywhere). */
+DEVICE int tile_rect(float u, float v, float radius, int gx, int gy, int *x0, int *y0, int *x1, int *y1)
+{
+    *x0 = I_MIN(gx, I_MAX(0, (int)((u - radius) / TILE)));
+    *y0 = I_MIN(gy, I_MAX(0, (int)((v - radius) / TILE)));
+    *x1 = I_MIN(gx, I_MAX(0, (int)((u + radius + TILE - 1) / TILE)));
+    *y1 = I_MIN(gy, I_MAX(0, (int)((v + radius + TILE - 1) / TILE)));
+    return (*x1 - *x0) * (*y1 - *y0);
+}
+
 /* ===================================================================== */
 /* forward                                                               */
 /* ===================================================================== */
 
 KERNEL void preprocess(int N, GLOBAL const float *means, GLOBAL const float *log_scales,
                        GLOBAL const float *rots, GLOBAL const float *opac, GLOBAL const float *sh,
-                       int sh_deg, CONSTANT float *cam, GLOBAL float *mean2d, GLOBAL float *depths,
-                       GLOBAL int *radii, GLOBAL float *conic_opac, GLOBAL float *colors)
+                       int sh_deg, CONSTANT float *cam, GLOBAL float *mean2d, GLOBAL int *radii,
+                       GLOBAL float *conic_opac, GLOBAL float *colors,
+                       GLOBAL int *tiles_touched, GLOBAL unsigned int *depth_keys, GLOBAL int *depth_ids)
 {
     int i = GID_X;
     geom g;
     float det, mid, lambda1, radius, u, v;
-    int gx, gy;
+    int gx, gy, touched;
     if (i >= N)
         return;
+    /* defaults for culled gaussians: sorted to the end, no tiles */
     radii[i] = 0;
+    tiles_touched[i] = 0;
+    depth_keys[i] = 0xFFFFFFFFu;
+    depth_ids[i] = i;
     if (!compute_geom(i, means, log_scales, rots, cam, &g))
         return;
     det = g.a * g.c - g.b * g.b;
@@ -227,11 +242,9 @@ KERNEL void preprocess(int N, GLOBAL const float *means, GLOBAL const float *log
     gx = ((int)cam[CAM_W] + TILE - 1) / TILE;
     gy = ((int)cam[CAM_H] + TILE - 1) / TILE;
     {
-        int x0 = I_MIN(gx, I_MAX(0, (int)((u - radius) / TILE)));
-        int y0 = I_MIN(gy, I_MAX(0, (int)((v - radius) / TILE)));
-        int x1 = I_MIN(gx, I_MAX(0, (int)((u + radius + TILE - 1) / TILE)));
-        int y1 = I_MIN(gy, I_MAX(0, (int)((v + radius + TILE - 1) / TILE)));
-        if ((x1 - x0) * (y1 - y0) == 0)
+        int x0, y0, x1, y1;
+        touched = tile_rect(u, v, radius, gx, gy, &x0, &y0, &x1, &y1);
+        if (touched == 0)
             return;
     }
 
@@ -249,12 +262,13 @@ KERNEL void preprocess(int N, GLOBAL const float *means, GLOBAL const float *log
 
     mean2d[2 * i] = u;
     mean2d[2 * i + 1] = v;
-    depths[i] = g.tc[2];
     radii[i] = (int)radius;
     conic_opac[4 * i] = g.c / det;
     conic_opac[4 * i + 1] = -g.b / det;
     conic_opac[4 * i + 2] = g.a / det;
     conic_opac[4 * i + 3] = 1.f / (1.f + F_EXP(-opac[i]));
+    tiles_touched[i] = touched;
+    depth_keys[i] = F_AS_U(g.tc[2]); /* positive floats sort like their bit patterns */
 }
 
 TILE_KERNEL void render_fwd(GLOBAL const int *ranges, GLOBAL const int *point_list, int W, int H,
@@ -349,10 +363,12 @@ TILE_KERNEL void render_fwd(GLOBAL const int *ranges, GLOBAL const int *point_li
 CONST_DATA float GW[11] = {0.00102838f, 0.00759876f, 0.03600077f, 0.10936069f, 0.21300553f, 0.26601172f,
                            0.21300553f, 0.10936069f, 0.03600077f, 0.00759876f, 0.00102838f};
 
-#define GT(gt, p, c) ((float)(gt)[(p) * 4 + (c)] * (1.f / 255.f))
+/* gt points to all training photos; gt_off = first pixel of the current one */
+#define GT(gt, p, c) ((float)(gt)[((size_t)gt_off + (size_t)(p)) * 4 + (c)] * (1.f / 255.f))
 
 /* horizontal blur of x, y, x^2, y^2, xy  -> tmp[5][3][HW] */
-KERNEL void ssim_h(int W, int H, GLOBAL const float *img, GLOBAL const unsigned char *gt, GLOBAL float *tmp)
+KERNEL void ssim_h(int W, int H, GLOBAL const float *img, GLOBAL const unsigned char *gt, int gt_off,
+                   GLOBAL float *tmp)
 {
     int x = GID_X, y = GID_Y, c = GID_Z;
     int hw = W * H, k;
@@ -445,7 +461,7 @@ KERNEL void ssim_bh(int W, int H, GLOBAL const float *efh, GLOBAL float *tmp)
 
 /* vertical blur + final gradient of the loss w.r.t. the rendered image */
 KERNEL void loss_grad(int W, int H, float lambda_ssim, GLOBAL const float *img, GLOBAL const unsigned char *gt,
-                      GLOBAL const float *tmp, GLOBAL float *dL_dimg)
+                      int gt_off, GLOBAL const float *tmp, GLOBAL float *dL_dimg)
 {
     int x = GID_X, y = GID_Y, c = GID_Z;
     int hw = W * H, k, q;
@@ -787,4 +803,334 @@ KERNEL void accum_stats(int N, GLOBAL const int *radii, GLOBAL const float *dL_d
     accum[i] += F_SQRT(gx * gx + gy * gy);
     denom[i] += 1.f;
     max_radii[i] = F_MAX(max_radii[i], (float)radii[i]);
+}
+
+/* ===================================================================== */
+/* GPU binning: prefix scan, stable radix sort, tile ranges               */
+/*                                                                       */
+/* Per iteration: sort visible gaussians by depth (32 bit keys), emit one */
+/* (tile, gaussian) pair per covered tile in depth order, stable-sort the */
+/* pairs by tile and find each tile's range. Blocks are 256 threads.      */
+/* ===================================================================== */
+
+#define SCAN_PER_THREAD 4
+#define SCAN_BLOCK_ELEMS (256 * SCAN_PER_THREAD)
+
+/* inclusive block scan (Hillis-Steele) over 256 threads; must be called by all threads */
+DEVICE int block_scan_incl(SHARED_PTR int *s, int tid, int v)
+{
+    int off;
+    s[tid] = v;
+    SYNC();
+    for (off = 1; off < 256; off <<= 1) {
+        int t = tid >= off ? s[tid - off] : 0;
+        SYNC();
+        s[tid] += t;
+        SYNC();
+    }
+    return s[tid];
+}
+
+/* exclusive scan of 1024 element chunks; block totals go to sums[] */
+BLOCK1D_KERNEL void scan_block(int n, GLOBAL const int *in, GLOBAL int *out, GLOBAL int *sums)
+{
+    SHARED int s[256];
+    int tid = LID_X, blk = GRP_X;
+    int base = (blk * 256 + tid) * SCAN_PER_THREAD;
+    int v[SCAN_PER_THREAD];
+    int k, sum = 0, incl, run;
+    for (k = 0; k < SCAN_PER_THREAD; k++) {
+        int idx = base + k;
+        v[k] = idx < n ? in[idx] : 0;
+        sum += v[k];
+    }
+    incl = block_scan_incl(s, tid, sum);
+    run = incl - sum;
+    for (k = 0; k < SCAN_PER_THREAD; k++) {
+        int idx = base + k;
+        if (idx < n)
+            out[idx] = run;
+        run += v[k];
+    }
+    if (tid == 255)
+        sums[blk] = incl;
+}
+
+/* adds the scanned block totals to every element */
+KERNEL void scan_add(int n, GLOBAL int *out, GLOBAL const int *sums)
+{
+    int i = GID_X;
+    if (i < n)
+        out[i] += sums[i / SCAN_BLOCK_ELEMS];
+}
+
+/* radix sort pass, 4 bit digit: per block digit histogram, digit major layout */
+BLOCK1D_KERNEL void radix_hist(int n, GLOBAL const unsigned int *keys, int shift, int nblocks, GLOBAL int *hist)
+{
+    SHARED int cnt[16];
+    int tid = LID_X, blk = GRP_X, i = blk * 256 + tid;
+    if (tid < 16)
+        cnt[tid] = 0;
+    SYNC();
+    if (i < n)
+        SHARED_INC(&cnt[(keys[i] >> shift) & 15u]);
+    SYNC();
+    if (tid < 16)
+        hist[tid * nblocks + blk] = cnt[tid];
+}
+
+/* radix sort pass: stable local sort by digit (binary splits), then scatter using the
+ * scanned histogram hoff[digit * nblocks + block] */
+BLOCK1D_KERNEL void radix_scatter(int n, GLOBAL const unsigned int *kin, GLOBAL const int *vin,
+                                  GLOBAL unsigned int *kout, GLOBAL int *vout, int shift, int nblocks,
+                                  GLOBAL const int *hoff)
+{
+    SHARED unsigned int lk[256];
+    SHARED int lv[256];
+    SHARED int ld[256];
+    SHARED unsigned int tk[256];
+    SHARED int tv[256];
+    SHARED int td[256];
+    SHARED int ls[256];
+    SHARED int lstart[16];
+    int tid = LID_X, blk = GRP_X, i = blk * 256 + tid;
+    int valid = i < n;
+    int b, d;
+    lk[tid] = valid ? kin[i] : 0u;
+    lv[tid] = valid ? vin[i] : 0;
+    ld[tid] = valid ? (int)((lk[tid] >> shift) & 15u) : 16; /* padding sorts last */
+    if (tid < 16)
+        lstart[tid] = 0;
+    SYNC();
+    for (b = 0; b < 5; b++) {
+        int dig = ld[tid];
+        unsigned int key = lk[tid];
+        int val = lv[tid];
+        int f = ((dig >> b) & 1) == 0 ? 1 : 0;
+        int incl = block_scan_incl(ls, tid, f);
+        int total_f = ls[255];
+        int excl = incl - f;
+        int pos = f ? excl : total_f + tid - excl;
+        SYNC();
+        td[pos] = dig;
+        tk[pos] = key;
+        tv[pos] = val;
+        SYNC();
+        ld[tid] = td[tid];
+        lk[tid] = tk[tid];
+        lv[tid] = tv[tid];
+        SYNC();
+    }
+    d = ld[tid];
+    if (d < 16 && (tid == 0 || ld[tid - 1] != d))
+        lstart[d] = tid;
+    SYNC();
+    if (d < 16) {
+        int pos = hoff[d * nblocks + blk] + (tid - lstart[d]);
+        kout[pos] = lk[tid];
+        vout[pos] = lv[tid];
+    }
+}
+
+/* tiles_touched in depth order */
+KERNEL void gather_counts(int n, GLOBAL const int *order, GLOBAL const int *tiles_touched, GLOBAL int *out)
+{
+    int k = GID_X;
+    if (k < n)
+        out[k] = tiles_touched[order[k]];
+}
+
+/* one (tile, gaussian) pair per covered tile, emitted in depth order */
+KERNEL void duplicate_pairs(int n, GLOBAL const int *order, GLOBAL const int *offsets, GLOBAL const float *mean2d,
+                            GLOBAL const int *radii, int gx, int gy, GLOBAL unsigned int *pair_tile,
+                            GLOBAL int *pair_id)
+{
+    int k = GID_X, id, o, x, y, x0, y0, x1, y1;
+    if (k >= n)
+        return;
+    id = order[k];
+    if (radii[id] <= 0)
+        return;
+    o = offsets[k];
+    tile_rect(mean2d[2 * id], mean2d[2 * id + 1], (float)radii[id], gx, gy, &x0, &y0, &x1, &y1);
+    for (y = y0; y < y1; y++)
+        for (x = x0; x < x1; x++) {
+            pair_tile[o] = (unsigned int)(y * gx + x);
+            pair_id[o] = id;
+            o++;
+        }
+}
+
+/* start/end of every tile in the tile sorted pair list (ranges zeroed before) */
+KERNEL void tile_ranges(int n, GLOBAL const unsigned int *pair_tile, GLOBAL int *ranges)
+{
+    int k = GID_X;
+    unsigned int t;
+    if (k >= n)
+        return;
+    t = pair_tile[k];
+    if (k == 0 || pair_tile[k - 1] != t)
+        ranges[2 * t] = k;
+    if (k == n - 1 || pair_tile[k + 1] != t)
+        ranges[2 * t + 1] = k + 1;
+}
+
+/* ===================================================================== */
+/* metrics: per block partial sums of |x-y| and (x-y)^2                   */
+/* ===================================================================== */
+
+BLOCK1D_KERNEL void image_metrics(int n3, int hw, GLOBAL const float *img, GLOBAL const unsigned char *gt, int gt_off,
+                                  GLOBAL float *partial)
+{
+    SHARED float s1[256];
+    SHARED float s2[256];
+    int tid = LID_X, e = GID_X, off;
+    float d = 0.f;
+    if (e < n3) {
+        int c = e / hw, p = e - c * hw;
+        float a = F_MIN(F_MAX(img[e], 0.f), 1.f);
+        d = a - GT(gt, p, c);
+    }
+    s1[tid] = d < 0.f ? -d : d;
+    s2[tid] = d * d;
+    SYNC();
+    for (off = 128; off > 0; off >>= 1) {
+        if (tid < off) {
+            s1[tid] += s1[tid + off];
+            s2[tid] += s2[tid + off];
+        }
+        SYNC();
+    }
+    if (tid == 0) {
+        partial[2 * GRP_X] = s1[0];
+        partial[2 * GRP_X + 1] = s2[0];
+    }
+}
+
+/* ===================================================================== */
+/* densification on the GPU                                              */
+/* ===================================================================== */
+
+#define DENS_KEEP 1   /* the gaussian itself survives */
+#define DENS_CLONE 2  /* plus an exact copy */
+#define DENS_SPLIT 4  /* replaced by two smaller samples */
+
+/* decides clone / split / prune for every gaussian; counts[i] = output slots */
+KERNEL void densify_count(int n, GLOBAL const float *log_scales, GLOBAL const float *opac, GLOBAL const float *accum,
+                          GLOBAL const float *denom, GLOBAL const float *max_radii, float grad_thr,
+                          float clone_max_scale, int prune_big, float big_scale, int allow_growth,
+                          GLOBAL int *flags, GLOBAL int *counts)
+{
+    int i = GID_X, f = 0;
+    float ms, g, op;
+    int opok, keep_parent;
+    if (i >= n)
+        return;
+    ms = F_EXP(F_MAX(F_MAX(log_scales[3 * i], log_scales[3 * i + 1]), log_scales[3 * i + 2]));
+    g = denom[i] > 0.f ? accum[i] / denom[i] : 0.f;
+    op = 1.f / (1.f + F_EXP(-opac[i]));
+    opok = op >= 0.005f;
+    keep_parent = opok && !(prune_big && (max_radii[i] > 20.f || ms > big_scale));
+    if (allow_growth && g >= grad_thr) {
+        if (ms <= clone_max_scale) {
+            /* the clone has no screen size history yet */
+            f = (keep_parent ? DENS_KEEP : 0) | ((opok && !(prune_big && ms > big_scale)) ? DENS_CLONE : 0);
+        } else {
+            f = (opok && !(prune_big && ms / 1.6f > big_scale)) ? DENS_SPLIT : 0;
+        }
+    } else {
+        f = keep_parent ? DENS_KEEP : 0;
+    }
+    flags[i] = f;
+    counts[i] = ((f & DENS_KEEP) ? 1 : 0) + ((f & DENS_CLONE) ? 1 : 0) + ((f & DENS_SPLIT) ? 2 : 0);
+}
+
+/* copies one parameter buffer (with its Adam moments) into the new layout */
+KERNEL void densify_scatter(int n, int dim, GLOBAL const int *flags, GLOBAL const int *offsets,
+                            GLOBAL const float *sp, GLOBAL const float *sm, GLOBAL const float *sv,
+                            GLOBAL float *dp, GLOBAL float *dm, GLOBAL float *dv)
+{
+    int i = GID_X, f, o, k, c, copies;
+    if (i >= n)
+        return;
+    f = flags[i];
+    o = offsets[i];
+    if (f & DENS_KEEP) {
+        for (k = 0; k < dim; k++) {
+            dp[(size_t)o * dim + k] = sp[(size_t)i * dim + k];
+            dm[(size_t)o * dim + k] = sm[(size_t)i * dim + k];
+            dv[(size_t)o * dim + k] = sv[(size_t)i * dim + k];
+        }
+        o++;
+    }
+    /* new gaussians start with fresh Adam moments */
+    copies = ((f & DENS_CLONE) ? 1 : 0) + ((f & DENS_SPLIT) ? 2 : 0);
+    for (c = 0; c < copies; c++, o++)
+        for (k = 0; k < dim; k++) {
+            dp[(size_t)o * dim + k] = sp[(size_t)i * dim + k];
+            dm[(size_t)o * dim + k] = 0.f;
+            dv[(size_t)o * dim + k] = 0.f;
+        }
+}
+
+DEVICE unsigned int hash_u32(unsigned int x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+DEVICE float rand_normal(unsigned int seed)
+{
+    float u1 = ((hash_u32(seed) >> 8) + 0.5f) * (1.f / 16777216.f);
+    float u2 = ((hash_u32(seed ^ 0x9e3779b9u) >> 8) + 0.5f) * (1.f / 16777216.f);
+    return F_SQRT(-2.f * F_LOG(u1)) * F_COS(6.2831853f * u2);
+}
+
+/* split children: positions sampled from the parent gaussian, scale / 1.6 */
+KERNEL void densify_split(int n, GLOBAL const int *flags, GLOBAL const int *offsets, GLOBAL const float *means,
+                          GLOBAL const float *log_scales, GLOBAL const float *rots, GLOBAL float *new_means,
+                          GLOBAL float *new_scales, unsigned int seed)
+{
+    int i = GID_X, c, k;
+    float q[4], R[9], s[3], ql;
+    if (i >= n || !(flags[i] & DENS_SPLIT))
+        return;
+    for (k = 0; k < 4; k++)
+        q[k] = rots[4 * i + k];
+    ql = F_SQRT(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (ql < 1e-12f) {
+        q[0] = 1.f;
+        q[1] = q[2] = q[3] = 0.f;
+    } else {
+        for (k = 0; k < 4; k++)
+            q[k] /= ql;
+    }
+    quat_to_rot(q, R);
+    for (k = 0; k < 3; k++)
+        s[k] = F_EXP(log_scales[3 * i + k]);
+    for (c = 0; c < 2; c++) {
+        int o = offsets[i] + c; /* split gaussians have no KEEP/CLONE slots */
+        float z[3];
+        for (k = 0; k < 3; k++)
+            z[k] = rand_normal(seed * 0x2545f491u + (unsigned int)i * 6u + (unsigned int)(c * 3 + k)) * s[k];
+        for (k = 0; k < 3; k++) {
+            new_means[3 * o + k] = means[3 * i + k] + R[3 * k] * z[0] + R[3 * k + 1] * z[1] + R[3 * k + 2] * z[2];
+            new_scales[3 * o + k] = F_LOG(s[k] / 1.6f);
+        }
+    }
+}
+
+/* periodic opacity reset: clamp to `cap` (logit of 0.01) and clear the moments */
+KERNEL void opacity_reset(int n, GLOBAL float *opac, GLOBAL float *m, GLOBAL float *v, float cap)
+{
+    int i = GID_X;
+    if (i >= n)
+        return;
+    opac[i] = F_MIN(opac[i], cap);
+    m[i] = 0.f;
+    v[i] = 0.f;
 }

@@ -27,6 +27,12 @@
 #define I_MIN min
 #define I_MAX max
 
+#define BLOCK1D_KERNEL extern "C" __global__ __launch_bounds__(256)
+#define SHARED_PTR
+#define F_LOG logf
+#define F_COS cosf
+#define F_AS_U(x) __float_as_uint(x)
+
 #define SHARED_INC(p) atomicAdd((p), 1)
 #define ATOMIC_ADD(p, v) atomicAdd((p), (v)) /* native float atomics */
 
