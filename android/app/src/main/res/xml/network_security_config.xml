@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The desktop server speaks plain HTTP. Traffic to it runs through the Tailscale
+  WireGuard tunnel, which already encrypts and authenticates both peers, so
+  cleartext HTTP is allowed here.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

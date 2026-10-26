@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Gaussian Splatting</string>
+
+    <!-- main -->
+    <string name="server_title">Desktop-Server (Tailscale)</string>
+    <string name="server_host_hint">Tailscale-IP oder MagicDNS-Name, z.B. 100.101.102.103</string>
+    <string name="server_port_hint">Port</string>
+    <string name="server_token_hint">Token (optional)</string>
+    <string name="test_connection">Verbindung testen</string>
+    <string name="server_jobs">Modelle auf dem Server</string>
+    <string name="training_settings">Training</string>
+    <string name="iterations_hint">Iterationen</string>
+    <string name="max_dim_hint">Max. Bildgröße (px)</string>
+    <string name="captures_title">Aufnahmen</string>
+    <string name="new_capture">Neue Aufnahme</string>
+    <string name="no_captures">Noch keine Aufnahmen. Tippe auf „Neue Aufnahme“, um ein Objekt zu fotografieren.</string>
+    <string name="connection_ok">Verbunden: %1$s</string>
+    <string name="connection_failed">Verbindung fehlgeschlagen: %1$s</string>
+    <string name="enter_host">Bitte zuerst die Tailscale-IP des Desktop-PCs eingeben.</string>
+    <string name="open_viewer_file">Modelldatei öffnen</string>
+
+    <!-- capture -->
+    <string name="capture_photo">Foto</string>
+    <string name="capture_done">Fertig</string>
+    <string name="auto_capture">Auto</string>
+    <string name="depth_points">Tiefe</string>
+    <string name="tracking_ok">Tracking OK</string>
+    <string name="tracking_lost">Tracking verloren: %1$s</string>
+    <string name="tracking_init">Initialisiere… Gerät langsam bewegen</string>
+    <string name="capture_stats">%1$d Fotos · %2$d Punkte</string>
+    <string name="capture_hint">Langsam um das Objekt herumgehen. Fotos aus verschiedenen Höhen und Winkeln aufnehmen (empfohlen: 60–200).</string>
+    <string name="camera_permission_needed">Für die Aufnahme wird die Kamera benötigt.</string>
+    <string name="arcore_not_supported">ARCore wird auf diesem Gerät nicht unterstützt: %1$s</string>
+    <string name="too_fast">Zu schnell – langsamer bewegen</string>
+    <string name="capture_saved">Gespeichert: %1$d Fotos</string>
+
+    <!-- project -->
+    <string name="frames_count">%1$d Fotos · %2$d Punkte · %3$s</string>
+    <string name="upload_and_train">Hochladen &amp; trainieren</string>
+    <string name="restart_training">Neu trainieren</string>
+    <string name="cancel_training">Training abbrechen</string>
+    <string name="download_model">Modell herunterladen</string>
+    <string name="download_snapshot">Zwischenstand laden</string>
+    <string name="view_model">3D-Modell ansehen</string>
+    <string name="share_model">Modell teilen</string>
+    <string name="delete_capture">Aufnahme löschen</string>
+    <string name="delete_confirm">Aufnahme und lokale Dateien wirklich löschen?</string>
+    <string name="delete">Löschen</string>
+    <string name="cancel">Abbrechen</string>
+    <string name="rename">Umbenennen</string>
+    <string name="state_local">Nur lokal</string>
+    <string name="state_uploading">Wird hochgeladen… %1$d%%</string>
+    <string name="state_queued">In der Warteschlange</string>
+    <string name="state_training">Training: %1$d / %2$d (%3$.1f dB PSNR, %4$d Gaussians)</string>
+    <string name="state_done">Fertig (%1$.1f dB PSNR, %2$d Gaussians)</string>
+    <string name="state_failed">Fehlgeschlagen: %1$s</string>
+    <string name="state_cancelled">Abgebrochen</string>
+    <string name="state_unknown">Status: %1$s</string>
+    <string name="downloading">Lade Modell… %1$d%%</string>
+    <string name="model_ready">Modell lokal verfügbar (%1$s)</string>
+    <string name="job_missing">Job existiert nicht mehr auf dem Server.</string>
+    <string name="error_generic">Fehler: %1$s</string>
+
+    <!-- server jobs -->
+    <string name="server_jobs_empty">Keine Jobs auf dem Server.</string>
+
+    <!-- viewer -->
+    <string name="viewer_loading">Lade Modell…</string>
+    <string name="viewer_info">%1$,d Splats · %2$d FPS</string>
+    <string name="viewer_reset">Ansicht zurücksetzen</string>
+    <string name="viewer_autorotate">Auto-Rotation</string>
+    <string name="viewer_background">Hintergrund</string>
+    <string name="viewer_up_axis">Hochachse</string>
+    <string name="viewer_splat_size">Splat-Größe</string>
+    <string name="viewer_fov">Sichtfeld</string>
+    <string name="viewer_help">1 Finger: drehen · 2 Finger: verschieben · Pinch: zoomen · Doppeltipp: zurücksetzen</string>
+    <string name="viewer_load_failed">Modell konnte nicht geladen werden: %1$s</string>
+</resources>

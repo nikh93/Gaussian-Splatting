@@ -1,0 +1,17 @@
+# desktop
+desktop/build/
+gsplat-data/
+
+# android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+*.apk
+*.aab
+
+# misc
+.DS_Store
+__pycache__/
