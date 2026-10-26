@@ -29,11 +29,14 @@
     <string name="tracking_lost">Tracking verloren: %1$s</string>
     <string name="tracking_init">Initialisiere… Gerät langsam bewegen</string>
     <string name="capture_stats">%1$d Fotos · %2$d Punkte</string>
-    <string name="capture_hint">Langsam um das Objekt herumgehen. Fotos aus verschiedenen Höhen und Winkeln aufnehmen (empfohlen: 60–200).</string>
+    <string name="capture_hint">Langsam um das Objekt herumgehen. Fotos aus verschiedenen Höhen und Winkeln aufnehmen (empfohlen: 60–200). Die Rahmen zeigen, wo bereits fotografiert wurde; neue Fotos sollten sich zu 60–80 % mit dem letzten überlappen.</string>
     <string name="camera_permission_needed">Für die Aufnahme wird die Kamera benötigt.</string>
     <string name="arcore_not_supported">ARCore wird auf diesem Gerät nicht unterstützt: %1$s</string>
     <string name="too_fast">Zu schnell – langsamer bewegen</string>
     <string name="capture_saved">Gespeichert: %1$d Fotos</string>
+    <string name="show_photos">Fotos</string>
+    <string name="overlap_text">Überlappung zum letzten Foto: %1$d %%</string>
+    <string name="overlap_low">Überlappung zum letzten Foto: %1$d %% – zu wenig, Foto machen</string>
 
     <!-- project -->
     <string name="frames_count">%1$d Fotos · %2$d Punkte · %3$s</string>

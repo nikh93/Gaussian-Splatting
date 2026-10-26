@@ -130,6 +130,18 @@ nicht erreichbar.
 
 ---
 
+## Downloads
+
+Fertige Builds (APK und Windows-Server) baut GitHub Actions bei jedem Push. Sie liegen unter
+**Releases → „latest-build“**:
+
+- `GaussianSplatting.apk`: Android-App. Zum Installieren auf dem Handy „Installation aus
+  unbekannten Quellen“ erlauben. Die APK ist debug-signiert, vor einem Update muss eine
+  vorherige Version deshalb ggf. deinstalliert werden.
+- `gsplat-server-windows.zip`: Desktop-Server für Windows mit CUDA. Entpacken und starten;
+  nötig ist nur ein NVIDIA-Treiber ab Version 550 (NVRTC liegt bei).
+- `gsplat-server-linux.tar.gz`: Desktop-Server für Linux.
+
 ## 3. Android-App (`android/`)
 
 Voraussetzungen: ein [ARCore-fähiges Gerät](https://developers.google.com/ar/devices),
@@ -147,8 +159,14 @@ Alternativ `android/` in Android Studio öffnen und starten.
 
 1. **Neue Aufnahme**: ARCore verfolgt die Position des Handys. Langsam um das Objekt herumgehen,
    aus mehreren Höhen und Winkeln. Im **Auto**-Modus wird automatisch ein Foto gemacht, sobald
-   das Handy ≥ 7 cm bewegt oder ≥ 10° gedreht wurde *und* ruhig gehalten wird (gegen
-   Bewegungsunschärfe). Mit **Foto** wird manuell ausgelöst. 60 bis 200 Fotos sind ein guter Wert.
+   das Handy ≥ 7 cm bewegt oder ≥ 10° gedreht wurde (oder die Überlappung unter 70 % fällt) *und*
+   ruhig gehalten wird (gegen Bewegungsunschärfe). Mit **Foto** wird manuell ausgelöst. 60 bis
+   200 Fotos sind ein guter Wert.
+   **Jedes Foto erscheint im AR-Bild an seiner Aufnahmeposition** als Kamerarahmen mit dem
+   Vorschaubild, das letzte Foto ist gelb markiert. So sieht man, welche Bereiche schon abgedeckt
+   sind. Oben steht die geschätzte **Überlappung** des aktuellen Bildausschnitts mit dem letzten
+   Foto: grün im empfohlenen Bereich bis 85 %, rot unter 40 % (dann ein Foto machen), gelb, wenn
+   sich das Bild kaum vom letzten unterscheidet. Der Schalter **Fotos** blendet die Rahmen aus.
 2. Pro Foto werden gespeichert: das CPU-Kamerabild in voller Auflösung (JPEG), die
    Kamera-Pose (`Camera.getPose()`, an der Sensor-Ausrichtung des Bildes ausgerichtet), die
    Intrinsik des Bildes (`getImageIntrinsics()`) und, falls das Gerät die ARCore Depth API

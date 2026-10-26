@@ -8,6 +8,7 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.os.Bundle
 import android.util.Log
+import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -60,12 +61,15 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var depthSupported = false
     private val background = BackgroundRenderer()
     private val pointRenderer = PointCloudRenderer()
+    private val photoMarkers = PhotoMarkerRenderer()
     private var shownPreviewVersion = -1
 
     @Volatile private var captureRequested = false
     @Volatile private var autoCapture = true
     @Volatile private var useDepth = true
     @Volatile private var finishing = false
+    @Volatile private var showPhotos = true
+    private var lastOverlap: Float? = null
 
     private var lastCapturePose: Pose? = null
     private var lastCaptureTime = 0L
@@ -110,6 +114,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             settings.useDepth = checked
             configureSession()
         }
+        binding.photosSwitch.setOnCheckedChangeListener { _, checked -> showPhotos = checked }
         binding.captureButton.setOnClickListener { captureRequested = true }
         binding.doneButton.setOnClickListener { finishCapture() }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -236,6 +241,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         background.createOnGlThread()
         pointRenderer.createOnGlThread()
+        photoMarkers.createOnGlThread()
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -294,8 +300,12 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 }
             }
 
+            // overlap of the current view with the last photo (projected image rectangle)
+            lastOverlap = photoMarkers.overlapWithLast(viewProj)
+            val ov = lastOverlap
             val still = speed < 0.35f && angSpeed < 45f
-            val auto = autoCapture && still && movedEnough(pose) && now - lastCaptureTime > 400_000_000L &&
+            val needPhoto = movedEnough(pose) || (ov != null && ov < AUTO_OVERLAP)
+            val auto = autoCapture && still && needPhoto && now - lastCaptureTime > 400_000_000L &&
                 recorder.pendingJobs < 4
             if (!finishing && (captureRequested || auto)) {
                 captureRequested = false
@@ -312,14 +322,20 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 pointRenderer.update(p, p.size / 6)
             }
             pointRenderer.draw(viewProj)
+            if (showPhotos) photoMarkers.draw(viewProj)
         } else {
             captureRequested = false
+            lastOverlap = null
         }
 
         if (frameCounter % 10 == 0 || !tracking) {
             val reason = camera.trackingFailureReason
             val tooFast = tracking && (speed > 0.6f || angSpeed > 90f)
-            runOnUiThread { updateTracking(camera.trackingState, reason, tooFast) }
+            val ov = lastOverlap
+            runOnUiThread {
+                updateTracking(camera.trackingState, reason, tooFast)
+                updateOverlap(ov)
+            }
         }
     }
 
@@ -347,9 +363,55 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val c2w = FloatArray(16)
         pose.toMatrix(c2w, 0)
         val depth = if (useDepth && depthSupported) sampleDepth(frame) else null
+        val imgIntr = if (intr.width != yuv.width || intr.height != yuv.height) intr.scaledTo(yuv.width, yuv.height) else intr
+        addPhotoMarker(yuv, c2w, imgIntr, sceneDepth(frame, c2w, depth))
         recorder.addFrame(yuv, c2w, intr, frame.timestamp, depth)
         runOnUiThread { updateStats() }
         return true
+    }
+
+    /** Thumbnail of the photo, shown in AR at the photo's pose (GL thread). */
+    private fun addPhotoMarker(yuv: YuvFrame, c2w: FloatArray, intr: Intrinsics, sceneDepth: Float) {
+        val tw = 160
+        val th = maxOf(1, tw * yuv.height / yuv.width)
+        val buf = java.nio.ByteBuffer.allocateDirect(tw * th * 4)
+        val rgb = IntArray(3)
+        for (y in 0 until th) {
+            val sy = y * yuv.height / th
+            for (x in 0 until tw) {
+                yuv.rgbAt(x * yuv.width / tw, sy, rgb)
+                buf.put(rgb[0].toByte()).put(rgb[1].toByte()).put(rgb[2].toByte()).put(255.toByte())
+            }
+        }
+        photoMarkers.add(c2w, intr, buf, tw, th, sceneDepth)
+    }
+
+    /** Typical distance to the scene for this photo: depth samples, else feature points, else 1 m. */
+    private fun sceneDepth(frame: Frame, c2w: FloatArray, depth: DepthSamples?): Float {
+        val values = ArrayList<Float>()
+        if (depth != null && depth.count > 0) {
+            for (i in 0 until depth.count) values.add(depth.depth[i])
+        } else {
+            try {
+                frame.acquirePointCloud().use { pc ->
+                    val pts = pc.points
+                    val n = pts.remaining() / 4
+                    for (i in 0 until n) {
+                        val dx = pts.get(i * 4) - c2w[12]
+                        val dy = pts.get(i * 4 + 1) - c2w[13]
+                        val dz = pts.get(i * 4 + 2) - c2w[14]
+                        // depth along the viewing direction (-z axis of the camera)
+                        val d = -(c2w[8] * dx + c2w[9] * dy + c2w[10] * dz)
+                        if (d in 0.1f..10f) values.add(d)
+                    }
+                }
+            } catch (e: Exception) {
+                // no point cloud this frame
+            }
+        }
+        if (values.size < 5) return 1f
+        values.sort()
+        return values[values.size / 2]
     }
 
     private fun sampleDepth(frame: Frame): DepthSamples? {
@@ -416,6 +478,24 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         updateStats()
     }
 
+    private fun updateOverlap(ov: Float?) {
+        val v = binding.overlapText
+        if (ov == null || !showPhotos) {
+            v.visibility = View.GONE
+            return
+        }
+        val pct = (ov * 100f).toInt()
+        v.visibility = View.VISIBLE
+        v.text = getString(if (ov < 0.4f) R.string.overlap_low else R.string.overlap_text, pct)
+        v.setTextColor(
+            when {
+                ov < 0.4f -> 0xFFFF5252.toInt()  // gap ahead: take a photo
+                ov <= 0.85f -> 0xFF69F0AE.toInt() // recommended range
+                else -> 0xFFFFD740.toInt()        // very similar to the last photo
+            }
+        )
+    }
+
     private fun reasonText(r: TrackingFailureReason): String = when (r) {
         TrackingFailureReason.BAD_STATE -> "interner Fehler"
         TrackingFailureReason.INSUFFICIENT_LIGHT -> "zu dunkel"
@@ -432,6 +512,8 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     companion object {
         private const val TAG = "CaptureActivity"
+        /** automatic capture also triggers when the overlap with the last photo drops below this */
+        private const val AUTO_OVERLAP = 0.7f
 
         fun distance(a: Pose, b: Pose): Float {
             val dx = a.tx() - b.tx()

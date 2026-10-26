@@ -41,6 +41,15 @@
             android:textSize="14sp" />
 
         <TextView
+            android:id="@+id/overlapText"
+            style="@style/OverlayText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/hintText"
             style="@style/OverlayText"
             android:layout_width="match_parent"
@@ -71,6 +80,14 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/auto_capture" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/photosSwitch"
+                style="@style/OverlayText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="@string/show_photos" />
 
             <com.google.android.material.materialswitch.MaterialSwitch
                 android:id="@+id/depthSwitch"
