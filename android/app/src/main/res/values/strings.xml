@@ -21,6 +21,7 @@
     <string name="open_viewer_file">Modelldatei öffnen</string>
     <string name="settings">Einstellungen</string>
     <string name="export_logs">Logs exportieren</string>
+    <string name="high_res_camera">Hohe Foto-Auflösung (kann Tracking stören)</string>
     <string name="export_logs_failed">Logs konnten nicht exportiert werden: %1$s</string>
 
     <!-- capture -->

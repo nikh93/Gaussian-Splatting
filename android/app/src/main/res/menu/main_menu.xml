@@ -11,6 +11,10 @@
             <item
                 android:id="@+id/action_export_logs"
                 android:title="@string/export_logs" />
+            <item
+                android:id="@+id/action_high_res"
+                android:checkable="true"
+                android:title="@string/high_res_camera" />
         </menu>
     </item>
 </menu>

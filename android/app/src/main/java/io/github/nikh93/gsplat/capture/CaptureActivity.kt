@@ -15,6 +15,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.CameraConfig
 import com.google.ar.core.CameraConfigFilter
@@ -75,6 +78,9 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var lastCaptureTime = 0L
     private var prevPose: Pose? = null
     private var prevTimeNs = 0L
+    private var trackingSinceNs = 0L
+    private var lastState: TrackingState? = null
+    private var lastReason: TrackingFailureReason? = null
     private var frameCounter = 0
 
     private val viewMatrix = FloatArray(16)
@@ -96,6 +102,11 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Insets.pad(binding.topPanel, top = true)
         Insets.pad(binding.bottomPanel, bottom = true)
+        // hide the navigation bar during capture (swipe from the edge shows it again)
+        WindowCompat.getInsetsController(window, binding.root).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
 
         settings = AppSettings(this)
         repo = CaptureRepository(this)
@@ -190,17 +201,20 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    /** Use the highest CPU image resolution for the photos (back camera, 30 fps). */
+    /**
+     * ARCore's default camera config tracks reliably everywhere; the highest CPU image
+     * resolution (opt-in) gives sharper photos but broke tracking on some phones.
+     */
     private fun selectCameraConfig(s: Session) {
-        val filter = CameraConfigFilter(s)
-            .setFacingDirection(CameraConfig.FacingDirection.BACK)
-            .setTargetFps(EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30))
-        val configs = s.getSupportedCameraConfigs(filter)
-        val best = configs.maxByOrNull { it.imageSize.width * it.imageSize.height }
-        if (best != null) {
-            s.cameraConfig = best
-            Log.i(TAG, "camera config: cpu ${best.imageSize} gpu ${best.textureSize}")
+        if (settings.highResCamera) {
+            val filter = CameraConfigFilter(s)
+                .setFacingDirection(CameraConfig.FacingDirection.BACK)
+                .setTargetFps(EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30))
+            s.getSupportedCameraConfigs(filter).maxByOrNull { it.imageSize.width * it.imageSize.height }
+                ?.let { s.cameraConfig = it }
         }
+        val c = s.cameraConfig
+        Log.i(TAG, "camera config: cpu ${c.imageSize} gpu ${c.textureSize} fps ${c.fpsRange} highRes=${settings.highResCamera}")
     }
 
     private fun configureSession() {
@@ -214,6 +228,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             depthMode = if (depthSupported && useDepth) Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
         }
         s.configure(config)
+        Log.i(TAG, "session config: depth ${config.depthMode} (supported=$depthSupported) focus ${config.focusMode}")
         runOnUiThread { binding.depthSwitch.isEnabled = depthSupported }
     }
 
@@ -269,18 +284,33 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val pose = camera.pose
         val now = frame.timestamp
 
-        // motion estimate for blur avoidance
+        val reason = camera.trackingFailureReason
+        if (camera.trackingState != lastState || reason != lastReason) {
+            Log.i(TAG, "tracking ${camera.trackingState} reason $reason")
+            lastState = camera.trackingState
+            lastReason = reason
+        }
+
+        // motion estimate for blur avoidance; only from tracked poses, the pose
+        // jumps when tracking (re)starts
         var speed = 0f
         var angSpeed = 0f
-        prevPose?.let { p ->
-            val dt = (now - prevTimeNs) / 1e9f
-            if (dt > 0f) {
-                speed = distance(p, pose) / dt
-                angSpeed = angleDeg(p, pose) / dt
+        if (tracking) {
+            prevPose?.let { p ->
+                val dt = (now - prevTimeNs) / 1e9f
+                if (dt > 0f) {
+                    speed = distance(p, pose) / dt
+                    angSpeed = angleDeg(p, pose) / dt
+                }
             }
+            if (prevPose == null) trackingSinceNs = now
+            prevPose = pose
+            prevTimeNs = now
+        } else {
+            prevPose = null
         }
-        prevPose = pose
-        prevTimeNs = now
+        // ARCore may report TRACKING for single frames while it initialises
+        val stable = tracking && now - trackingSinceNs > STABLE_TRACKING_NS
 
         if (tracking) {
             camera.getViewMatrix(viewMatrix, 0)
@@ -311,7 +341,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             val needPhoto = ov == null || ov < AUTO_OVERLAP
             val auto = autoCapture && still && needPhoto && now - lastCaptureTime > AUTO_MIN_INTERVAL_NS &&
                 recorder.pendingJobs < 3
-            if (!finishing && (captureRequested || auto)) {
+            if (!finishing && stable && (captureRequested || auto)) {
                 captureRequested = false
                 if (takePhoto(frame, pose)) {
                     lastCaptureTime = now
@@ -331,12 +361,12 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             lastOverlap = null
         }
 
-        if (frameCounter % 10 == 0 || !tracking) {
-            val reason = camera.trackingFailureReason
-            val tooFast = tracking && (speed > 0.6f || angSpeed > 90f)
+        if (frameCounter % 10 == 0 || !stable) {
+            val state = camera.trackingState
+            val tooFast = stable && (speed > 0.6f || angSpeed > 90f)
             val ov = lastOverlap
             runOnUiThread {
-                updateTracking(camera.trackingState, reason, tooFast)
+                updateTracking(state, stable, reason, tooFast)
                 updateOverlap(ov)
             }
         }
@@ -465,14 +495,14 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         binding.statsText.text = getString(R.string.capture_stats, recorder.frameCount, recorder.pointCount)
     }
 
-    private fun updateTracking(state: TrackingState, reason: TrackingFailureReason, tooFast: Boolean) {
+    private fun updateTracking(state: TrackingState, stable: Boolean, reason: TrackingFailureReason, tooFast: Boolean) {
         binding.trackingText.text = when {
-            state == TrackingState.TRACKING && tooFast -> getString(R.string.too_fast)
-            state == TrackingState.TRACKING -> getString(R.string.tracking_ok)
-            reason == TrackingFailureReason.NONE -> getString(R.string.tracking_init)
+            stable && tooFast -> getString(R.string.too_fast)
+            stable -> getString(R.string.tracking_ok)
+            state == TrackingState.TRACKING || reason == TrackingFailureReason.NONE -> getString(R.string.tracking_init)
             else -> getString(R.string.tracking_lost, reasonText(reason))
         }
-        binding.captureButton.isEnabled = state == TrackingState.TRACKING && !finishing
+        binding.captureButton.isEnabled = stable && !finishing
         updateStats()
     }
 
@@ -514,6 +544,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val AUTO_OVERLAP = 0.7f
         /** at most one automatic photo per second */
         private const val AUTO_MIN_INTERVAL_NS = 1_000_000_000L
+        private const val STABLE_TRACKING_NS = 500_000_000L
 
         fun distance(a: Pose, b: Pose): Float {
             val dx = a.tx() - b.tx()

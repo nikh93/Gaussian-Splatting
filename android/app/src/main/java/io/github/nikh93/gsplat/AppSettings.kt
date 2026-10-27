@@ -32,9 +32,15 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean("auto_capture_v2", false)
         set(v) = prefs.edit().putBoolean("auto_capture_v2", v).apply()
 
+    /** depth is opt-in (new key): ARCore's depth fails on some phones and slows tracking down */
     var useDepth: Boolean
-        get() = prefs.getBoolean("use_depth", true)
-        set(v) = prefs.edit().putBoolean("use_depth", v).apply()
+        get() = prefs.getBoolean("use_depth_v2", false)
+        set(v) = prefs.edit().putBoolean("use_depth_v2", v).apply()
+
+    /** full CPU image resolution for the photos instead of ARCore's default camera config */
+    var highResCamera: Boolean
+        get() = prefs.getBoolean("high_res_camera", false)
+        set(v) = prefs.edit().putBoolean("high_res_camera", v).apply()
 
     val isServerConfigured: Boolean get() = host.isNotBlank()
 

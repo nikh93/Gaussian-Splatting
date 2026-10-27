@@ -80,9 +80,19 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        menu.findItem(R.id.action_high_res)?.isChecked = settings.highResCamera
+        return super.onPrepareOptionsMenu(menu)
+    }
+
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.action_export_logs -> {
             exportLogs()
+            true
+        }
+        R.id.action_high_res -> {
+            settings.highResCamera = !settings.highResCamera
+            item.isChecked = settings.highResCamera
             true
         }
         else -> super.onOptionsItemSelected(item)
