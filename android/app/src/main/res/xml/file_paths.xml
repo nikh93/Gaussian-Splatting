@@ -2,4 +2,5 @@
 <paths>
     <files-path name="captures" path="captures/" />
     <files-path name="models" path="models/" />
+    <cache-path name="logs" path="logs/" />
 </paths>

@@ -19,6 +19,9 @@
     <string name="connection_failed">Verbindung fehlgeschlagen: %1$s</string>
     <string name="enter_host">Bitte zuerst die Tailscale-IP des Desktop-PCs eingeben.</string>
     <string name="open_viewer_file">Modelldatei öffnen</string>
+    <string name="settings">Einstellungen</string>
+    <string name="export_logs">Logs exportieren</string>
+    <string name="export_logs_failed">Logs konnten nicht exportiert werden: %1$s</string>
 
     <!-- capture -->
     <string name="capture_photo">Foto</string>
