@@ -148,7 +148,8 @@ class PhotoMarkerRenderer {
             if (!m.visible) continue
             Matrix.multiplyMM(mvp, 0, viewProj, 0, m.c2w, 0)
             GLES30.glUniformMatrix4fv(tMvp, 1, false, mvp, 0)
-            GLES30.glUniform1f(tAlpha, if (i == markers.size - 1) 0.9f else 0.65f)
+            // see-through, so the subject behind a photo stays recognisable
+            GLES30.glUniform1f(tAlpha, if (i == markers.size - 1) 0.4f else 0.25f)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, m.texture)
             m.quad.position(0)
             GLES30.glVertexAttribPointer(tPos, 3, GLES30.GL_FLOAT, false, 20, m.quad)
@@ -168,7 +169,7 @@ class PhotoMarkerRenderer {
             Matrix.multiplyMM(mvp, 0, viewProj, 0, m.c2w, 0)
             GLES30.glUniformMatrix4fv(lMvp, 1, false, mvp, 0)
             if (i == markers.size - 1) GLES30.glUniform4f(lColor, 1f, 0.85f, 0.1f, 1f)
-            else GLES30.glUniform4f(lColor, 0.2f, 0.85f, 1f, 0.8f)
+            else GLES30.glUniform4f(lColor, 0.2f, 0.85f, 1f, 0.6f)
             m.lines.position(0)
             GLES30.glVertexAttribPointer(lPos, 3, GLES30.GL_FLOAT, false, 12, m.lines)
             GLES30.glDrawArrays(GLES30.GL_LINES, 0, 16)

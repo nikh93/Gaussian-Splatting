@@ -109,10 +109,10 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
     private var statsTracked = 0
 
     /*
-     * Own IMU listener: on the Galaxy A56 ARCore received only ~6 IMU samples per second.
-     * Counting what the app itself gets shows whether the system throttles the app; and
-     * since a sensor runs at the fastest rate any client asks for, it may also give ARCore
-     * the full rate.
+     * Own IMU listener at the fastest rate. On the Galaxy A56 ARCore alone received only
+     * ~6 IMU samples per second and tracking kept failing; with this listener the sensors
+     * run fast and ARCore gets ~250 per second (tracking then held on every camera frame).
+     * The counts go to the log once per second.
      */
     private lateinit var sensorManager: SensorManager
     private var imuGyro = 0
