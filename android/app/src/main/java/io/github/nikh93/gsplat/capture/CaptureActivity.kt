@@ -296,21 +296,23 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         var speed = 0f
         var angSpeed = 0f
         if (tracking) {
-            prevPose?.let { p ->
+            val p = prevPose
+            if (p == null || now - prevTimeNs > MAX_TRACKING_GAP_NS) {
+                trackingSinceNs = now
+            } else {
                 val dt = (now - prevTimeNs) / 1e9f
                 if (dt > 0f) {
                     speed = distance(p, pose) / dt
                     angSpeed = angleDeg(p, pose) / dt
                 }
             }
-            if (prevPose == null) trackingSinceNs = now
             prevPose = pose
             prevTimeNs = now
-        } else {
-            prevPose = null
         }
-        // ARCore may report TRACKING for single frames while it initialises
-        val stable = tracking && now - trackingSinceNs > STABLE_TRACKING_NS
+        // ARCore may report TRACKING for single frames while it initialises, and on
+        // some phones drops single frames to PAUSED while tracking; short gaps are tolerated
+        val stable = prevPose != null && now - prevTimeNs <= MAX_TRACKING_GAP_NS &&
+            prevTimeNs - trackingSinceNs > STABLE_TRACKING_NS
 
         if (tracking) {
             camera.getViewMatrix(viewMatrix, 0)
@@ -545,6 +547,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         /** at most one automatic photo per second */
         private const val AUTO_MIN_INTERVAL_NS = 1_000_000_000L
         private const val STABLE_TRACKING_NS = 500_000_000L
+        private const val MAX_TRACKING_GAP_NS = 300_000_000L
 
         fun distance(a: Pose, b: Pose): Float {
             val dx = a.tx() - b.tx()
