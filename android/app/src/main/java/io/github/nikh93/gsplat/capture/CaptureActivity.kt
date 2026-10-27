@@ -3,6 +3,10 @@ package io.github.nikh93.gsplat.capture
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.opengl.GLES30
 import android.opengl.Matrix
 import android.os.Bundle
@@ -104,6 +108,23 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
     private var statsFrames = 0
     private var statsTracked = 0
 
+    /*
+     * Own IMU listener: on the Galaxy A56 ARCore received only ~6 IMU samples per second.
+     * Counting what the app itself gets shows whether the system throttles the app; and
+     * since a sensor runs at the fastest rate any client asks for, it may also give ARCore
+     * the full rate.
+     */
+    private lateinit var sensorManager: SensorManager
+    private var imuGyro = 0
+    private var imuAccel = 0
+    private val imuListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) imuAccel++ else imuGyro++
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
+
     private val viewMatrix = FloatArray(16)
     private val projMatrix = FloatArray(16)
     private val viewProj = FloatArray(16)
@@ -134,6 +155,7 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
         capture = repo.create()
         recorder = CaptureRecorder(capture, repo)
         rotationHelper = DisplayRotationHelper(this)
+        sensorManager = getSystemService(SensorManager::class.java)
 
         autoCapture = settings.autoCapture
         useDepth = settings.useDepth
@@ -195,6 +217,7 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
             return
         }
         rotationHelper.onResume()
+        registerImu()
         running = true
         Choreographer.getInstance().postFrameCallback(this)
     }
@@ -204,6 +227,7 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
         running = false
         Choreographer.getInstance().removeFrameCallback(this)
         rotationHelper.onPause()
+        sensorManager.unregisterListener(imuListener)
         session?.pause()
     }
 
@@ -236,6 +260,14 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
         }
         val c = s.cameraConfig
         Log.i(TAG, "camera config: cpu ${c.imageSize} gpu ${c.textureSize} fps ${c.fpsRange} resolution=$res")
+    }
+
+    private fun registerImu() {
+        for (type in intArrayOf(Sensor.TYPE_GYROSCOPE_UNCALIBRATED, Sensor.TYPE_ACCELEROMETER)) {
+            val sensor = sensorManager.getDefaultSensor(type) ?: continue
+            val ok = sensorManager.registerListener(imuListener, sensor, SensorManager.SENSOR_DELAY_FASTEST)
+            Log.i(TAG, "imu listener ${sensor.name} minDelay ${sensor.minDelay} us registered=$ok")
+        }
     }
 
     private fun configureSession(s: Session) {
@@ -416,7 +448,13 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
         statsFrames++
         if (tracking) statsTracked++
         if (nowMs - statsSinceMs >= 1000L) {
-            Log.i(TAG, "tracking stats: $statsTracked of $statsFrames camera frames tracked")
+            Log.i(
+                TAG,
+                "tracking stats: $statsTracked of $statsFrames camera frames tracked, " +
+                    "app imu gyro $imuGyro accel $imuAccel per s"
+            )
+            imuGyro = 0
+            imuAccel = 0
             statsSinceMs = nowMs
             statsFrames = 0
             statsTracked = 0
@@ -462,17 +500,22 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
      */
     private fun takePhoto(s: Session, frame: Frame, pose: Pose, force: Boolean): PhotoResult {
         val camera = frame.camera
+        var sharpness = 0f
+        var sharp = false
+        // the blur check runs on the camera image itself, a rejected frame is never copied
         val yuv = try {
-            frame.acquireCameraImage().use { YuvFrame.copyOf(it) }
+            frame.acquireCameraImage().use { img ->
+                val y = img.planes[0]
+                sharpness = Sharpness.of(y.buffer, y.rowStride, img.width, img.height)
+                sharp = sharpnessRef.isSharp(sharpness)
+                if (!sharp && !force) null else YuvFrame.copyOf(img)
+            }
         } catch (e: NotYetAvailableException) {
             return PhotoResult.UNAVAILABLE
         } catch (e: Exception) {
             Log.w(TAG, "acquireCameraImage failed", e)
             return PhotoResult.UNAVAILABLE
-        }
-        val sharpness = yuv.sharpness()
-        val sharp = sharpnessRef.isSharp(sharpness)
-        if (!sharp && !force) return PhotoResult.REJECTED_BLURRY
+        } ?: return PhotoResult.REJECTED_BLURRY
         val ii = camera.imageIntrinsics
         val focal = ii.focalLength
         val pp = ii.principalPoint
