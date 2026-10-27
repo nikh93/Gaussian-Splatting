@@ -240,15 +240,23 @@ class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograph
 
     private fun configureSession(s: Session) {
         depthSupported = s.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
+        // Same configuration as SceneView (the AR test app that tracks fine on the Galaxy
+        // A56). With plane finding and light estimation disabled ARCore got the IMU at only
+        // ~6 samples per second there (160 ms apart instead of 8 ms) and tracking kept
+        // dropping out; the planes themselves are not used.
         val config = Config(s).apply {
             focusMode = Config.FocusMode.AUTO
             updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-            planeFindingMode = Config.PlaneFindingMode.DISABLED
-            lightEstimationMode = Config.LightEstimationMode.DISABLED
+            planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+            lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
             depthMode = if (depthSupported && useDepth) Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
         }
         s.configure(config)
-        Log.i(TAG, "session config: depth ${config.depthMode} (supported=$depthSupported) focus ${config.focusMode}, main thread")
+        Log.i(
+            TAG,
+            "session config: depth ${config.depthMode} (supported=$depthSupported) focus ${config.focusMode} " +
+                "planes ${config.planeFindingMode} light ${config.lightEstimationMode}, main thread"
+        )
     }
 
     private fun finishCapture() {

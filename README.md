@@ -169,10 +169,13 @@ Alternativ `android/` in Android Studio öffnen und starten.
    dem Vorschaubild, das letzte ist gelb markiert. Jeder Rahmen hängt an einem ARCore-Anker:
    korrigiert ARCore seine Karte, wandert der Rahmen mit der echten Szene mit.
 
-   ARCore und das Rendern laufen auf dem Hauptthread im Takt des Displays (wie bei SceneView).
-   Mit einem eigenen GL-Thread bekam ARCore auf dem Galaxy A56 die Bewegungssensoren nur alle
-   160 ms gebündelt, und das Tracking fiel mehrmals pro Sekunde aus. Das Log enthält dazu jede
-   Sekunde eine Zeile `tracking stats: x of y camera frames tracked`.
+   ARCore läuft mit derselben Konfiguration wie SceneView: Flächenerkennung horizontal und
+   vertikal, HDR-Lichtschätzung, Autofokus, auf dem Hauptthread im Takt des Displays. Mit
+   abgeschalteter Flächenerkennung und Lichtschätzung bekam ARCore auf dem Galaxy A56 nur etwa
+   6 Sensorwerte pro Sekunde statt 125, und das Tracking fiel mehrmals pro Sekunde aus. Das Log
+   enthält jede Sekunde eine Zeile `tracking stats: x of y camera frames tracked`, die Zahl der
+   Sensorwerte steht in ARCores Zeilen `[Sensor][SENSOR_TYPE_ACCELEROMETER_0] Accumulative count`.
+   Fotos, deren Anker ARCore gerade nicht verfolgt, werden ausgeblendet.
 
    **Abdeckung**: Der grüne Bogen um den Auslöser zeigt, welcher Anteil der Blickrichtungen
    schon fotografiert ist. Der Kreis oben rechts zeigt das genauer, von oben gesehen: der äußere

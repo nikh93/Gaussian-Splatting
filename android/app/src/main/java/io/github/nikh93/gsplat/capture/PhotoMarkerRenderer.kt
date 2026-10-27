@@ -33,7 +33,10 @@ class PhotoMarkerRenderer {
         val c2w: FloatArray,
         val intr: Intrinsics,
         val sceneDepth: Float,
-    )
+    ) {
+        /** an anchor ARCore does not track right now has no valid pose: not drawn */
+        var visible = true
+    }
 
     private val markers = ArrayList<Marker>()
     private var lineProgram = 0
@@ -124,7 +127,8 @@ class PhotoMarkerRenderer {
     fun updatePoses() {
         for (m in markers) {
             val a = m.anchor ?: continue
-            if (a.trackingState == TrackingState.TRACKING) a.pose.toMatrix(m.c2w, 0)
+            m.visible = a.trackingState == TrackingState.TRACKING
+            if (m.visible) a.pose.toMatrix(m.c2w, 0)
         }
     }
 
@@ -141,6 +145,7 @@ class PhotoMarkerRenderer {
         GLES30.glEnableVertexAttribArray(tPos)
         GLES30.glEnableVertexAttribArray(tUv)
         for ((i, m) in markers.withIndex()) {
+            if (!m.visible) continue
             Matrix.multiplyMM(mvp, 0, viewProj, 0, m.c2w, 0)
             GLES30.glUniformMatrix4fv(tMvp, 1, false, mvp, 0)
             GLES30.glUniform1f(tAlpha, if (i == markers.size - 1) 0.9f else 0.65f)
@@ -159,6 +164,7 @@ class PhotoMarkerRenderer {
         GLES30.glLineWidth(3f)
         GLES30.glEnableVertexAttribArray(lPos)
         for ((i, m) in markers.withIndex()) {
+            if (!m.visible) continue
             Matrix.multiplyMM(mvp, 0, viewProj, 0, m.c2w, 0)
             GLES30.glUniformMatrix4fv(lMvp, 1, false, mvp, 0)
             if (i == markers.size - 1) GLES30.glUniform4f(lColor, 1f, 0.85f, 0.1f, 1f)
