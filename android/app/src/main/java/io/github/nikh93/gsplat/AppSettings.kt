@@ -37,12 +37,23 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean("use_depth_v2", false)
         set(v) = prefs.edit().putBoolean("use_depth_v2", v).apply()
 
-    /** full CPU image resolution for the photos instead of ARCore's default camera config */
-    var highResCamera: Boolean
-        get() = prefs.getBoolean("high_res_camera", false)
-        set(v) = prefs.edit().putBoolean("high_res_camera", v).apply()
+    /**
+     * Photo resolution: [RES_STANDARD] is ARCore's default camera config (640x480 on most
+     * phones, too coarse for splatting), [RES_MEDIUM] the smallest config of at least 720p,
+     * [RES_MAX] the largest. The tracking problems on the Galaxy A56 turned out to be
+     * independent of the resolution, so the largest is the default again.
+     */
+    var photoResolution: Int
+        get() = prefs.getInt("photo_resolution", RES_MAX)
+        set(v) = prefs.edit().putInt("photo_resolution", v).apply()
 
     val isServerConfigured: Boolean get() = host.isNotBlank()
+
+    companion object {
+        const val RES_STANDARD = 0
+        const val RES_MEDIUM = 1
+        const val RES_MAX = 2
+    }
 
     fun client(): GsplatClient = GsplatClient(GsplatClient.baseUrl(host, port), token.ifBlank { null })
 }

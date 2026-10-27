@@ -12,9 +12,8 @@
                 android:id="@+id/action_export_logs"
                 android:title="@string/export_logs" />
             <item
-                android:id="@+id/action_high_res"
-                android:checkable="true"
-                android:title="@string/high_res_camera" />
+                android:id="@+id/action_photo_resolution"
+                android:title="@string/photo_resolution" />
         </menu>
     </item>
 </menu>

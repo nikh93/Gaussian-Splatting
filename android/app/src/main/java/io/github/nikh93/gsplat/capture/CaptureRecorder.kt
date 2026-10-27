@@ -36,6 +36,7 @@ class CaptureRecorder(private val capture: Capture, private val repo: CaptureRep
         val c2w: FloatArray, // column major 4x4 (ARCore Pose.toMatrix), OpenGL camera convention
         val intr: Intrinsics,
         val timestampNs: Long,
+        val sharpness: Float,
     )
 
     private val worker = Executors.newSingleThreadExecutor()
@@ -86,9 +87,10 @@ class CaptureRecorder(private val capture: Capture, private val repo: CaptureRep
 
     /**
      * Stores one photo. [c2w] is the column major camera pose (sensor aligned, Pose.toMatrix),
-     * [intr] the CPU image intrinsics, [depth] optional depth samples of the same frame.
+     * [intr] the CPU image intrinsics, [depth] optional depth samples of the same frame,
+     * [sharpness] the photo's blur measure (see [Sharpness]).
      */
-    fun addFrame(image: YuvFrame, c2w: FloatArray, intr: Intrinsics, timestampNs: Long, depth: DepthSamples?) {
+    fun addFrame(image: YuvFrame, c2w: FloatArray, intr: Intrinsics, timestampNs: Long, depth: DepthSamples?, sharpness: Float) {
         val index = frameCount
         frameCount++
         pending.incrementAndGet()
@@ -99,7 +101,7 @@ class CaptureRecorder(private val capture: Capture, private val repo: CaptureRep
                 file.writeBytes(image.toJpeg(92))
                 val imgIntr = if (intr.width != image.width || intr.height != image.height)
                     intr.scaledTo(image.width, image.height) else intr
-                frames.add(FrameRecord(name, c2w, imgIntr, timestampNs))
+                frames.add(FrameRecord(name, c2w, imgIntr, timestampNs, sharpness))
                 if (depth != null) addDepthPoints(depth, c2w, image, imgIntr)
                 colorFeaturePoints(c2w, image, imgIntr)
                 pointCount = numPoints
@@ -252,6 +254,7 @@ class CaptureRecorder(private val capture: Capture, private val repo: CaptureRep
                 put("w", f.intr.width)
                 put("h", f.intr.height)
                 put("timestamp_ns", f.timestampNs)
+                put("sharpness", f.sharpness.toDouble())
             })
         }
         val root = JSONObject().apply {

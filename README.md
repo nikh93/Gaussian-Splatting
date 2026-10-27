@@ -167,7 +167,22 @@ Alternativ `android/` in Android Studio öffnen und starten.
    sind. Oben steht die geschätzte **Überlappung** des aktuellen Bildausschnitts mit dem letzten
    Foto: grün im empfohlenen Bereich bis 85 %, rot unter 40 % (dann ein Foto machen), gelb, wenn
    sich das Bild kaum vom letzten unterscheidet. Der Schalter **Fotos** blendet die Rahmen aus.
-2. Pro Foto werden gespeichert: das CPU-Kamerabild in voller Auflösung (JPEG), die
+
+   **Abdeckung**: Der Kreis oben rechts zeigt von oben gesehen, aus welchen Richtungen das
+   Objekt schon fotografiert ist: der äußere Ring von unten bzw. auf Objekthöhe (bis 15°), der
+   mittlere schräg von oben (15–45°), die Mitte steil von oben. Jeder Ring ist in Sektoren
+   geteilt (12, 12 und 6), grün heißt abgedeckt. Der gelbe Punkt ist die aktuelle Position, das
+   erste Foto liegt unten. Den Objektmittelpunkt schätzt die App als den Punkt, auf den alle
+   Blickachsen zeigen. Ziel: alle 30 Richtungen grün.
+
+   **Schärfe**: Jedes Foto wird auf Bewegungsunschärfe geprüft (Varianz des Laplace-Operators
+   auf der Helligkeit). Weil der Wert von der Szene abhängt, vergleicht die App mit dem Median
+   der letzten Kamerabilder derselben Aufnahme. Liegt ein Foto unter 60 % davon, wird es
+   verworfen und beim nächsten Kamerabild erneut versucht. Ein Tipp auf **Foto** wartet bis zu
+   1,5 Sekunden auf ein scharfes Bild und speichert danach notfalls ein unscharfes (mit Hinweis).
+   Oben steht live „Bild scharf“ bzw. „Bild unscharf – ruhiger halten“.
+2. Pro Foto werden gespeichert: das CPU-Kamerabild (JPEG, Auflösung im Zahnradmenü unter
+   **Foto-Auflösung**, Standard: die größte, die ARCore anbietet, meist 1920×1080), die
    Kamera-Pose (`Camera.getPose()`, an der Sensor-Ausrichtung des Bildes ausgerichtet), die
    Intrinsik des Bildes (`getImageIntrinsics()`) und, falls das Gerät die ARCore Depth API
    kann (**Tiefe**), eingefärbte 3D-Punkte aus dem Tiefenbild. Dazu kommen die
@@ -203,6 +218,29 @@ dort wird auch die blickabhängige Farbe (Spherical Harmonics) berechnet. Er öf
 
 ---
 
+### Zahnradmenü (Hauptbildschirm)
+
+- **Logs exportieren**: schreibt das Log der App (inkl. der ARCore-Meldungen) mit Gerät,
+  Android- und ARCore-Version in eine Textdatei und öffnet das Teilen-Menü.
+- **Foto-Auflösung**: Standard (ARCore-Vorgabe, meist 640×480), Mittel (ab 1280×720) oder
+  Maximal.
+
+### Worauf es bei Gaussian Splatting ankommt
+
+Kurz zusammengefasst, was die App dafür tut und was (noch) nicht:
+
+| Anforderung | Stand |
+|---|---|
+| Kameraposen pro Foto | ARCore-Posen, ohne Nachoptimierung (siehe unten) |
+| Rundum-Abdeckung aus mehreren Höhen | Abdeckungskreis mit 30 Richtungen |
+| 60–80 % Überlappung | Überlappungsanzeige, Auto-Modus bei < 70 % |
+| Scharfe Fotos | Schärfeprüfung, unscharfe Bilder werden verworfen |
+| Hohe Auflösung | größte ARCore-CPU-Auflösung (Kamera-Vollauflösung parallel zu ARCore ginge nur über die Shared-Camera-API) |
+| Startpunktwolke | ARCore-Feature-Punkte und optional Tiefenpunkte |
+| Gleichbleibende Belichtung/Weißabgleich | **fehlt**: ARCore regelt automatisch. Sperren ginge nur über die Shared-Camera-API; alternativ eine Belichtungskorrektur pro Bild im Trainer |
+| Floater entfernen | **fehlt** in der App; z. B. in SuperSplat nachbearbeiten |
+| Kompaktes Austauschformat | `.ply` und `.splat`; **SPZ/SOG fehlen** noch |
+
 ## 4. REST-API
 
 Alle Pfade unter `/api`. Wenn der Server mit `--token` gestartet wurde, muss jeder Request
@@ -236,7 +274,8 @@ curl -X POST http://100.101.102.103:8080/api/jobs/$ID/start
 transforms.json   {"camera_model":"OPENCV", "ply_file_path":"points3d.ply",
                    "frames":[{"file_path":"images/frame_00000.jpg",
                               "transform_matrix":[[4x4 Kamera→Welt, OpenGL-Achsen]],
-                              "fl_x","fl_y","cx","cy","w","h","timestamp_ns"}, ...]}
+                              "fl_x","fl_y","cx","cy","w","h","timestamp_ns",
+                              "sharpness"}, ...]}
 images/           Fotos (Sensor-Ausrichtung, wie von ARCore geliefert)
 points3d.ply      ASCII-PLY: x y z red green blue (Meter, ARCore-Weltkoordinaten, Y nach oben)
 ```

@@ -75,6 +75,16 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     @Volatile private var showPhotos = true
     private var lastOverlap: Float? = null
 
+    /* blur check: photos are compared with the recent sharpness of the scene */
+    private val sharpnessRef = SharpnessReference(60)
+    @Volatile private var liveSharp: Boolean? = null
+    private var captureDeadlineNs = 0L
+    private var lastAttemptTimestamp = 0L
+
+    /* which viewing directions around the object have a photo */
+    private val coverage = CoverageTracker()
+    @Volatile private var cameraPosition: FloatArray? = null
+
     private var lastCaptureTime = 0L
     private var prevPose: Pose? = null
     private var prevTimeNs = 0L
@@ -201,20 +211,24 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    /**
-     * ARCore's default camera config tracks reliably everywhere; the highest CPU image
-     * resolution (opt-in) gives sharper photos but broke tracking on some phones.
-     */
+    /** CPU image resolution for the photos (back camera, 30 fps), see [AppSettings.photoResolution]. */
     private fun selectCameraConfig(s: Session) {
-        if (settings.highResCamera) {
+        val res = settings.photoResolution
+        if (res != AppSettings.RES_STANDARD) {
             val filter = CameraConfigFilter(s)
                 .setFacingDirection(CameraConfig.FacingDirection.BACK)
                 .setTargetFps(EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30))
-            s.getSupportedCameraConfigs(filter).maxByOrNull { it.imageSize.width * it.imageSize.height }
-                ?.let { s.cameraConfig = it }
+            val configs = s.getSupportedCameraConfigs(filter)
+            val area = { c: CameraConfig -> c.imageSize.width * c.imageSize.height }
+            val chosen = if (res == AppSettings.RES_MEDIUM) {
+                configs.filter { area(it) >= 1280 * 720 }.minByOrNull(area) ?: configs.maxByOrNull(area)
+            } else {
+                configs.maxByOrNull(area)
+            }
+            chosen?.let { s.cameraConfig = it }
         }
         val c = s.cameraConfig
-        Log.i(TAG, "camera config: cpu ${c.imageSize} gpu ${c.textureSize} fps ${c.fpsRange} highRes=${settings.highResCamera}")
+        Log.i(TAG, "camera config: cpu ${c.imageSize} gpu ${c.textureSize} fps ${c.fpsRange} resolution=$res")
     }
 
     private fun configureSession() {
@@ -319,6 +333,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             camera.getProjectionMatrix(projMatrix, 0, 0.05f, 50f)
             Matrix.multiplyMM(viewProj, 0, projMatrix, 0, viewMatrix, 0)
 
+            if (stable && frameCounter % 15 == 7) sampleSharpness(frame)
             if (++frameCounter % 15 == 0) {
                 frame.acquirePointCloud().use { pc ->
                     val ids = pc.ids
@@ -343,13 +358,25 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             val needPhoto = ov == null || ov < AUTO_OVERLAP
             val auto = autoCapture && still && needPhoto && now - lastCaptureTime > AUTO_MIN_INTERVAL_NS &&
                 recorder.pendingJobs < 3
-            if (!finishing && stable && (captureRequested || auto)) {
-                captureRequested = false
-                if (takePhoto(frame, pose)) {
+            // a tap waits up to MANUAL_WAIT_NS for a sharp frame, then takes the photo anyway
+            if (captureRequested && captureDeadlineNs == 0L) captureDeadlineNs = now + MANUAL_WAIT_NS
+            if (!finishing && stable && (captureRequested || auto) && now != lastAttemptTimestamp) {
+                lastAttemptTimestamp = now
+                val force = captureRequested && now > captureDeadlineNs
+                val result = takePhoto(frame, pose, force)
+                if (result == PhotoResult.TAKEN || result == PhotoResult.TAKEN_BLURRY) {
+                    captureRequested = false
+                    captureDeadlineNs = 0L
                     lastCaptureTime = now
-                    runOnUiThread { flash() }
+                    runOnUiThread {
+                        flash()
+                        if (result == PhotoResult.TAKEN_BLURRY) {
+                            Toast.makeText(this, R.string.photo_blurry, Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             }
+            cameraPosition = floatArrayOf(pose.tx(), pose.ty(), pose.tz())
 
             if (recorder.previewVersion != shownPreviewVersion) {
                 shownPreviewVersion = recorder.previewVersion
@@ -359,32 +386,62 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             pointRenderer.draw(viewProj)
             if (showPhotos) photoMarkers.draw(viewProj)
         } else {
-            captureRequested = false
             lastOverlap = null
+        }
+        if (!stable) {
+            captureRequested = false
+            captureDeadlineNs = 0L
         }
 
         if (frameCounter % 10 == 0 || !stable) {
             val state = camera.trackingState
             val tooFast = stable && (speed > 0.6f || angSpeed > 90f)
             val ov = lastOverlap
+            val pos = cameraPosition
+            val sharp = liveSharp
             runOnUiThread {
                 updateTracking(state, stable, reason, tooFast)
                 updateOverlap(ov)
+                updateQuality(if (stable) pos else null, if (stable) sharp else null)
             }
         }
     }
 
-    /** Grabs CPU image + pose + intrinsics (+ depth) of the current frame. */
-    private fun takePhoto(frame: Frame, pose: Pose): Boolean {
+    private enum class PhotoResult { TAKEN, TAKEN_BLURRY, REJECTED_BLURRY, UNAVAILABLE }
+
+    /** Sharpness of the current camera image for the live indicator and the reference (GL thread). */
+    private fun sampleSharpness(frame: Frame) {
+        try {
+            frame.acquireCameraImage().use { img ->
+                val y = img.planes[0]
+                val v = Sharpness.of(y.buffer, y.rowStride, img.width, img.height)
+                sharpnessRef.add(v)
+                liveSharp = sharpnessRef.isSharp(v)
+            }
+        } catch (e: NotYetAvailableException) {
+            // no CPU image for this frame
+        } catch (e: Exception) {
+            Log.w(TAG, "sharpness sample failed", e)
+        }
+    }
+
+    /**
+     * Grabs CPU image + pose + intrinsics (+ depth) of the current frame. A blurry image is
+     * rejected (the caller retries on the next camera frame) unless [force] is set.
+     */
+    private fun takePhoto(frame: Frame, pose: Pose, force: Boolean): PhotoResult {
         val camera = frame.camera
         val yuv = try {
             frame.acquireCameraImage().use { YuvFrame.copyOf(it) }
         } catch (e: NotYetAvailableException) {
-            return false
+            return PhotoResult.UNAVAILABLE
         } catch (e: Exception) {
             Log.w(TAG, "acquireCameraImage failed", e)
-            return false
+            return PhotoResult.UNAVAILABLE
         }
+        val sharpness = yuv.sharpness()
+        val sharp = sharpnessRef.isSharp(sharpness)
+        if (!sharp && !force) return PhotoResult.REJECTED_BLURRY
         val ii = camera.imageIntrinsics
         val focal = ii.focalLength
         val pp = ii.principalPoint
@@ -394,10 +451,13 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         pose.toMatrix(c2w, 0)
         val depth = if (useDepth && depthSupported) sampleDepth(frame) else null
         val imgIntr = if (intr.width != yuv.width || intr.height != yuv.height) intr.scaledTo(yuv.width, yuv.height) else intr
-        addPhotoMarker(yuv, c2w, imgIntr, sceneDepth(frame, c2w, depth))
-        recorder.addFrame(yuv, c2w, intr, frame.timestamp, depth)
+        val distance = sceneDepth(frame, c2w, depth)
+        addPhotoMarker(yuv, c2w, imgIntr, distance)
+        coverage.addPhoto(c2w, distance)
+        recorder.addFrame(yuv, c2w, intr, frame.timestamp, depth, sharpness)
+        Log.i(TAG, "photo ${recorder.frameCount}: sharpness $sharpness (scene median ${sharpnessRef.median()}) forced=$force")
         runOnUiThread { updateStats() }
-        return true
+        return if (sharp) PhotoResult.TAKEN else PhotoResult.TAKEN_BLURRY
     }
 
     /** Thumbnail of the photo, shown in AR at the photo's pose (GL thread). */
@@ -508,6 +568,18 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         updateStats()
     }
 
+    /** Coverage dome and blur indicator. */
+    private fun updateQuality(cameraPos: FloatArray?, sharp: Boolean?) {
+        val s = coverage.snapshot(cameraPos)
+        binding.coverageView.update(s)
+        binding.coverageText.text = getString(R.string.coverage_text, s.covered, s.total)
+        binding.sharpnessText.visibility = if (sharp == null) View.GONE else View.VISIBLE
+        if (sharp != null) {
+            binding.sharpnessText.setText(if (sharp) R.string.sharpness_ok else R.string.sharpness_blurry)
+            binding.sharpnessText.setTextColor(if (sharp) 0xFF69F0AE.toInt() else 0xFFFF5252.toInt())
+        }
+    }
+
     private fun updateOverlap(ov: Float?) {
         val v = binding.overlapText
         if (ov == null || !showPhotos) {
@@ -548,6 +620,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val AUTO_MIN_INTERVAL_NS = 1_000_000_000L
         private const val STABLE_TRACKING_NS = 500_000_000L
         private const val MAX_TRACKING_GAP_NS = 300_000_000L
+        private const val MANUAL_WAIT_NS = 1_500_000_000L
 
         fun distance(a: Pose, b: Pose): Float {
             val dx = a.tx() - b.tx()

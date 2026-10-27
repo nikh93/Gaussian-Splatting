@@ -11,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -80,22 +81,27 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
-        menu.findItem(R.id.action_high_res)?.isChecked = settings.highResCamera
-        return super.onPrepareOptionsMenu(menu)
-    }
-
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.action_export_logs -> {
             exportLogs()
             true
         }
-        R.id.action_high_res -> {
-            settings.highResCamera = !settings.highResCamera
-            item.isChecked = settings.highResCamera
+        R.id.action_photo_resolution -> {
+            choosePhotoResolution()
             true
         }
         else -> super.onOptionsItemSelected(item)
+    }
+
+    private fun choosePhotoResolution() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.photo_resolution)
+            .setSingleChoiceItems(R.array.photo_resolutions, settings.photoResolution) { dialog, which ->
+                settings.photoResolution = which
+                dialog.dismiss()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun exportLogs() {

@@ -21,7 +21,16 @@
     <string name="open_viewer_file">Modelldatei öffnen</string>
     <string name="settings">Einstellungen</string>
     <string name="export_logs">Logs exportieren</string>
-    <string name="high_res_camera">Hohe Foto-Auflösung (kann Tracking stören)</string>
+    <string name="photo_resolution">Foto-Auflösung</string>
+    <string-array name="photo_resolutions">
+        <item>Standard (ARCore, meist 640×480)</item>
+        <item>Mittel (ab 1280×720)</item>
+        <item>Maximal (empfohlen)</item>
+    </string-array>
+    <string name="coverage_text">Abdeckung: %1$d / %2$d Richtungen</string>
+    <string name="sharpness_ok">Bild scharf</string>
+    <string name="sharpness_blurry">Bild unscharf – ruhiger halten</string>
+    <string name="photo_blurry">Foto unscharf gespeichert – an dieser Stelle besser noch einmal ruhig aufnehmen</string>
     <string name="export_logs_failed">Logs konnten nicht exportiert werden: %1$s</string>
 
     <!-- capture -->
@@ -33,7 +42,7 @@
     <string name="tracking_lost">Tracking verloren: %1$s</string>
     <string name="tracking_init">Initialisiere… Gerät langsam bewegen</string>
     <string name="capture_stats">%1$d Fotos · %2$d Punkte</string>
-    <string name="capture_hint">Langsam um das Objekt herumgehen. Fotos aus verschiedenen Höhen und Winkeln aufnehmen (empfohlen: 60–200). Die Rahmen zeigen, wo bereits fotografiert wurde; neue Fotos sollten sich zu 60–80 % mit dem letzten überlappen.</string>
+    <string name="capture_hint">Langsam einmal ganz um das Objekt herumgehen, dann noch einmal von schräg oben und einmal von oben (empfohlen: 60–200 Fotos). Der Kreis rechts zeigt die Richtungen, aus denen schon fotografiert wurde: außen von unten, innen von oben, der Punkt ist die aktuelle Position. Neue Fotos sollten sich zu 60–80 % mit dem letzten überlappen. Unscharfe Bilder werden automatisch verworfen.</string>
     <string name="camera_permission_needed">Für die Aufnahme wird die Kamera benötigt.</string>
     <string name="arcore_not_supported">ARCore wird auf diesem Gerät nicht unterstützt: %1$s</string>
     <string name="too_fast">Zu schnell – langsamer bewegen</string>

@@ -5,6 +5,7 @@ import android.graphics.Rect
 import android.graphics.YuvImage
 import android.media.Image
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 
 /**
  * Copy of an ARCore CPU camera image (YUV_420_888). Copying the planes is fast,
@@ -65,6 +66,9 @@ class YuvFrame private constructor(
         img.compressToJpeg(Rect(0, 0, width, height), quality, bos)
         return bos.toByteArray()
     }
+
+    /** Variance of the Laplacian of the luminance, see [Sharpness]. */
+    fun sharpness(): Float = Sharpness.of(ByteBuffer.wrap(y), yRowStride, width, height)
 
     /** RGB (0..255) at pixel (x, y) or null when outside the image. */
     fun rgbAt(px: Int, py: Int, out: IntArray): Boolean {
