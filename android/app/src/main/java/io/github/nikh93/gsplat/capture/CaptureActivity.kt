@@ -4,10 +4,12 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.opengl.GLES30
-import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
+import android.view.Choreographer
+import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
@@ -18,6 +20,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.google.ar.core.Anchor
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.CameraConfig
 import com.google.ar.core.CameraConfigFilter
@@ -38,8 +41,6 @@ import io.github.nikh93.gsplat.data.CaptureRepository
 import io.github.nikh93.gsplat.databinding.ActivityCaptureBinding
 import io.github.nikh93.gsplat.util.Insets
 import java.util.EnumSet
-import javax.microedition.khronos.egl.EGLConfig
-import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.min
@@ -50,8 +51,11 @@ import kotlin.math.sqrt
  * automatically whenever the phone was moved far enough while being held still.
  * For every photo the camera pose, intrinsics and (if available) depth points are
  * recorded - everything the Gaussian Splatting trainer needs.
+ *
+ * ARCore and the GL rendering run on the main thread, paced by the Choreographer (see
+ * [EglCore] for why). The options are chosen beforehand in [CaptureSetupActivity].
  */
-class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
+class CaptureActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographer.FrameCallback {
 
     private lateinit var binding: ActivityCaptureBinding
     private lateinit var settings: AppSettings
@@ -63,35 +67,42 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var session: Session? = null
     private var installRequested = false
     private var depthSupported = false
+    private lateinit var egl: EglCore
     private val background = BackgroundRenderer()
-    private val pointRenderer = PointCloudRenderer()
     private val photoMarkers = PhotoMarkerRenderer()
-    private var shownPreviewVersion = -1
+    private var running = false
+    private var lastFrameTimestamp = 0L
 
-    @Volatile private var captureRequested = false
-    @Volatile private var autoCapture = false
-    @Volatile private var useDepth = true
-    @Volatile private var finishing = false
-    @Volatile private var showPhotos = true
-    private var lastOverlap: Float? = null
+    private var captureRequested = false
+    private var autoCapture = false
+    private var useDepth = false
+    private var showPhotos = true
+    private var finishing = false
 
     /* blur check: photos are compared with the recent sharpness of the scene */
     private val sharpnessRef = SharpnessReference(60)
-    @Volatile private var liveSharp: Boolean? = null
+    private var liveSharp: Boolean? = null
     private var captureDeadlineNs = 0L
     private var lastAttemptTimestamp = 0L
 
     /* which viewing directions around the object have a photo */
     private val coverage = CoverageTracker()
-    @Volatile private var cameraPosition: FloatArray? = null
+
+    /* a short message in the status pill, e.g. after a blurry photo */
+    private var noticeText: String? = null
+    private var noticeUntilMs = 0L
 
     private var lastCaptureTime = 0L
     private var prevPose: Pose? = null
     private var prevTimeNs = 0L
     private var trackingSinceNs = 0L
-    private var lastState: TrackingState? = null
     private var lastReason: TrackingFailureReason? = null
     private var frameCounter = 0
+
+    /* tracking statistics, logged once per second for diagnosis */
+    private var statsSinceMs = 0L
+    private var statsFrames = 0
+    private var statsTracked = 0
 
     private val viewMatrix = FloatArray(16)
     private val projMatrix = FloatArray(16)
@@ -112,7 +123,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Insets.pad(binding.topPanel, top = true)
         Insets.pad(binding.bottomPanel, bottom = true)
-        // hide the navigation bar during capture (swipe from the edge shows it again)
+        // hide the system bars during capture (swipe from the edge shows them again)
         WindowCompat.getInsetsController(window, binding.root).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(WindowInsetsCompat.Type.systemBars())
@@ -126,30 +137,22 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         autoCapture = settings.autoCapture
         useDepth = settings.useDepth
-        binding.autoSwitch.isChecked = autoCapture
-        binding.depthSwitch.isChecked = useDepth
-        binding.autoSwitch.setOnCheckedChangeListener { _, checked ->
-            autoCapture = checked
-            settings.autoCapture = checked
-        }
-        binding.depthSwitch.setOnCheckedChangeListener { _, checked ->
-            useDepth = checked
-            settings.useDepth = checked
-            configureSession()
-        }
-        binding.photosSwitch.setOnCheckedChangeListener { _, checked -> showPhotos = checked }
+        showPhotos = settings.showPhotos
+        binding.coverageView.visibility = if (settings.showCoverage) View.VISIBLE else View.GONE
+
         binding.captureButton.setOnClickListener { captureRequested = true }
+        binding.undoButton.setOnClickListener { undoLastPhoto() }
         binding.doneButton.setOnClickListener { finishCapture() }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = finishCapture()
         })
 
-        binding.surface.preserveEGLContextOnPause = true
-        binding.surface.setEGLContextClientVersion(3)
-        binding.surface.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
-        binding.surface.setRenderer(this)
-        binding.surface.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-        updateStats()
+        egl = EglCore()
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        background.createOnGlThread()
+        photoMarkers.createOnGlThread()
+        binding.surface.holder.addCallback(this)
+        updateUi(stable = false, state = TrackingState.PAUSED, reason = TrackingFailureReason.NONE, tooFast = false)
     }
 
     override fun onResume() {
@@ -169,8 +172,9 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 }
                 val s = Session(this)
                 selectCameraConfig(s)
+                configureSession(s)
+                s.setCameraTextureName(background.textureId)
                 session = s
-                configureSession()
             } catch (e: UnavailableException) {
                 Toast.makeText(this, getString(R.string.arcore_not_supported, e.javaClass.simpleName), Toast.LENGTH_LONG)
                     .show()
@@ -190,14 +194,16 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             finish()
             return
         }
-        binding.surface.onResume()
         rotationHelper.onResume()
+        running = true
+        Choreographer.getInstance().postFrameCallback(this)
     }
 
     override fun onPause() {
         super.onPause()
+        running = false
+        Choreographer.getInstance().removeFrameCallback(this)
         rotationHelper.onPause()
-        binding.surface.onPause()
         session?.pause()
     }
 
@@ -205,6 +211,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         super.onDestroy()
         session?.close()
         session = null
+        egl.release()
         if (!finishing) {
             // activity closed without "Fertig": still save what we have
             recorder.finish { if (capture.frames == 0) repo.delete(capture) }
@@ -231,8 +238,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         Log.i(TAG, "camera config: cpu ${c.imageSize} gpu ${c.textureSize} fps ${c.fpsRange} resolution=$res")
     }
 
-    private fun configureSession() {
-        val s = session ?: return
+    private fun configureSession(s: Session) {
         depthSupported = s.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
         val config = Config(s).apply {
             focusMode = Config.FocusMode.AUTO
@@ -242,8 +248,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             depthMode = if (depthSupported && useDepth) Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
         }
         s.configure(config)
-        Log.i(TAG, "session config: depth ${config.depthMode} (supported=$depthSupported) focus ${config.focusMode}")
-        runOnUiThread { binding.depthSwitch.isEnabled = depthSupported }
+        Log.i(TAG, "session config: depth ${config.depthMode} (supported=$depthSupported) focus ${config.focusMode}, main thread")
     }
 
     private fun finishCapture() {
@@ -265,32 +270,54 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    // ------------------------------------------------------------------
-    // GL renderer
-
-    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        GLES30.glClearColor(0f, 0f, 0f, 1f)
-        background.createOnGlThread()
-        pointRenderer.createOnGlThread()
-        photoMarkers.createOnGlThread()
+    private fun undoLastPhoto() {
+        if (finishing || recorder.frameCount == 0) return
+        egl.makeCurrent()
+        photoMarkers.removeLast()
+        coverage.removeLast()
+        recorder.removeLast()
+        Log.i(TAG, "photo removed, ${recorder.frameCount} left")
+        notice(getString(R.string.photo_removed))
     }
 
-    override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+    // ------------------------------------------------------------------
+    // surface and frame loop (main thread)
+
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        egl.attach(holder.surface)
+    }
+
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        egl.makeCurrent()
         GLES30.glViewport(0, 0, width, height)
         rotationHelper.onSurfaceChanged(width, height)
     }
 
-    override fun onDrawFrame(gl: GL10?) {
-        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
-        val s = session ?: return
-        rotationHelper.updateSessionIfNeeded(s)
-        val frame: Frame = try {
-            s.setCameraTextureName(background.textureId)
-            s.update()
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        egl.detach()
+    }
+
+    override fun doFrame(frameTimeNanos: Long) {
+        if (!running) return
+        Choreographer.getInstance().postFrameCallback(this)
+        try {
+            drawFrame()
         } catch (e: Exception) {
-            Log.w(TAG, "session.update failed", e)
-            return
+            Log.w(TAG, "frame failed", e)
         }
+    }
+
+    private fun drawFrame() {
+        val s = session ?: return
+        if (!egl.hasWindow) return
+        egl.makeCurrent()
+        rotationHelper.updateSessionIfNeeded(s)
+        val frame: Frame = s.update()
+        // the display runs faster than the camera: nothing new to show
+        if (frame.timestamp == lastFrameTimestamp) return
+        lastFrameTimestamp = frame.timestamp
+
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         background.draw(frame)
 
         val camera = frame.camera
@@ -299,11 +326,11 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val now = frame.timestamp
 
         val reason = camera.trackingFailureReason
-        if (camera.trackingState != lastState || reason != lastReason) {
+        if (reason != lastReason) {
             Log.i(TAG, "tracking ${camera.trackingState} reason $reason")
-            lastState = camera.trackingState
             lastReason = reason
         }
+        logTrackingStats(tracking)
 
         // motion estimate for blur avoidance; only from tracked poses, the pose
         // jumps when tracking (re)starts
@@ -328,33 +355,20 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val stable = prevPose != null && now - prevTimeNs <= MAX_TRACKING_GAP_NS &&
             prevTimeNs - trackingSinceNs > STABLE_TRACKING_NS
 
+        var cameraPosition: FloatArray? = null
         if (tracking) {
             camera.getViewMatrix(viewMatrix, 0)
             camera.getProjectionMatrix(projMatrix, 0, 0.05f, 50f)
             Matrix.multiplyMM(viewProj, 0, projMatrix, 0, viewMatrix, 0)
+            photoMarkers.updatePoses()
 
             if (stable && frameCounter % 15 == 7) sampleSharpness(frame)
-            if (++frameCounter % 15 == 0) {
-                frame.acquirePointCloud().use { pc ->
-                    val ids = pc.ids
-                    val pts = pc.points
-                    val n = ids.remaining()
-                    if (n > 0) {
-                        val idArr = IntArray(n)
-                        ids.get(idArr)
-                        val ptArr = FloatArray(n * 4)
-                        pts.get(ptArr)
-                        recorder.submitFeaturePoints(idArr, ptArr, n)
-                    }
-                }
-            }
+            if (frameCounter % 15 == 0) submitFeaturePoints(frame)
 
-            // overlap of the current view with the last photo (projected image rectangle)
-            lastOverlap = photoMarkers.overlapWithLast(viewProj)
-            val ov = lastOverlap
-            val still = speed < 0.35f && angSpeed < 45f
             // auto mode: a new photo only when the view has moved on far enough that the
             // overlap with the last photo dropped below AUTO_OVERLAP (the first one when still)
+            val ov = photoMarkers.overlapWithLast(viewProj)
+            val still = speed < 0.35f && angSpeed < 45f
             val needPhoto = ov == null || ov < AUTO_OVERLAP
             val auto = autoCapture && still && needPhoto && now - lastCaptureTime > AUTO_MIN_INTERVAL_NS &&
                 recorder.pendingJobs < 3
@@ -363,53 +377,62 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             if (!finishing && stable && (captureRequested || auto) && now != lastAttemptTimestamp) {
                 lastAttemptTimestamp = now
                 val force = captureRequested && now > captureDeadlineNs
-                val result = takePhoto(frame, pose, force)
+                val result = takePhoto(s, frame, pose, force)
                 if (result == PhotoResult.TAKEN || result == PhotoResult.TAKEN_BLURRY) {
                     captureRequested = false
                     captureDeadlineNs = 0L
                     lastCaptureTime = now
-                    runOnUiThread {
-                        flash()
-                        if (result == PhotoResult.TAKEN_BLURRY) {
-                            Toast.makeText(this, R.string.photo_blurry, Toast.LENGTH_SHORT).show()
-                        }
-                    }
+                    flash()
+                    if (result == PhotoResult.TAKEN_BLURRY) notice(getString(R.string.photo_blurry))
                 }
             }
             cameraPosition = floatArrayOf(pose.tx(), pose.ty(), pose.tz())
-
-            if (recorder.previewVersion != shownPreviewVersion) {
-                shownPreviewVersion = recorder.previewVersion
-                val p = recorder.preview
-                pointRenderer.update(p, p.size / 6)
-            }
-            pointRenderer.draw(viewProj)
             if (showPhotos) photoMarkers.draw(viewProj)
-        } else {
-            lastOverlap = null
         }
         if (!stable) {
             captureRequested = false
             captureDeadlineNs = 0L
         }
+        egl.swap()
 
-        if (frameCounter % 10 == 0 || !stable) {
-            val state = camera.trackingState
+        if (++frameCounter % 10 == 0 || !stable) {
             val tooFast = stable && (speed > 0.6f || angSpeed > 90f)
-            val ov = lastOverlap
-            val pos = cameraPosition
-            val sharp = liveSharp
-            runOnUiThread {
-                updateTracking(state, stable, reason, tooFast)
-                updateOverlap(ov)
-                updateQuality(if (stable) pos else null, if (stable) sharp else null)
+            updateUi(stable, camera.trackingState, reason, tooFast)
+            updateCoverage(if (stable) cameraPosition else null)
+        }
+    }
+
+    private fun logTrackingStats(tracking: Boolean) {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (statsSinceMs == 0L) statsSinceMs = nowMs
+        statsFrames++
+        if (tracking) statsTracked++
+        if (nowMs - statsSinceMs >= 1000L) {
+            Log.i(TAG, "tracking stats: $statsTracked of $statsFrames camera frames tracked")
+            statsSinceMs = nowMs
+            statsFrames = 0
+            statsTracked = 0
+        }
+    }
+
+    private fun submitFeaturePoints(frame: Frame) {
+        frame.acquirePointCloud().use { pc ->
+            val ids = pc.ids
+            val pts = pc.points
+            val n = ids.remaining()
+            if (n > 0) {
+                val idArr = IntArray(n)
+                ids.get(idArr)
+                val ptArr = FloatArray(n * 4)
+                pts.get(ptArr)
+                recorder.submitFeaturePoints(idArr, ptArr, n)
             }
         }
     }
 
     private enum class PhotoResult { TAKEN, TAKEN_BLURRY, REJECTED_BLURRY, UNAVAILABLE }
 
-    /** Sharpness of the current camera image for the live indicator and the reference (GL thread). */
+    /** Sharpness of the current camera image for the live indicator and the reference. */
     private fun sampleSharpness(frame: Frame) {
         try {
             frame.acquireCameraImage().use { img ->
@@ -429,7 +452,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
      * Grabs CPU image + pose + intrinsics (+ depth) of the current frame. A blurry image is
      * rejected (the caller retries on the next camera frame) unless [force] is set.
      */
-    private fun takePhoto(frame: Frame, pose: Pose, force: Boolean): PhotoResult {
+    private fun takePhoto(s: Session, frame: Frame, pose: Pose, force: Boolean): PhotoResult {
         val camera = frame.camera
         val yuv = try {
             frame.acquireCameraImage().use { YuvFrame.copyOf(it) }
@@ -452,16 +475,22 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val depth = if (useDepth && depthSupported) sampleDepth(frame) else null
         val imgIntr = if (intr.width != yuv.width || intr.height != yuv.height) intr.scaledTo(yuv.width, yuv.height) else intr
         val distance = sceneDepth(frame, c2w, depth)
-        addPhotoMarker(yuv, c2w, imgIntr, distance)
+        // the marker hangs on an anchor so it stays where the photo was taken
+        val anchor: Anchor? = try {
+            s.createAnchor(pose)
+        } catch (e: Exception) {
+            Log.w(TAG, "createAnchor failed", e)
+            null
+        }
+        addPhotoMarker(yuv, c2w, anchor, imgIntr, distance)
         coverage.addPhoto(c2w, distance)
         recorder.addFrame(yuv, c2w, intr, frame.timestamp, depth, sharpness)
         Log.i(TAG, "photo ${recorder.frameCount}: sharpness $sharpness (scene median ${sharpnessRef.median()}) forced=$force")
-        runOnUiThread { updateStats() }
         return if (sharp) PhotoResult.TAKEN else PhotoResult.TAKEN_BLURRY
     }
 
-    /** Thumbnail of the photo, shown in AR at the photo's pose (GL thread). */
-    private fun addPhotoMarker(yuv: YuvFrame, c2w: FloatArray, intr: Intrinsics, sceneDepth: Float) {
+    /** Thumbnail of the photo, shown in AR at the photo's pose. */
+    private fun addPhotoMarker(yuv: YuvFrame, c2w: FloatArray, anchor: Anchor?, intr: Intrinsics, sceneDepth: Float) {
         val tw = 160
         val th = maxOf(1, tw * yuv.height / yuv.width)
         val buf = java.nio.ByteBuffer.allocateDirect(tw * th * 4)
@@ -473,7 +502,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 buf.put(rgb[0].toByte()).put(rgb[1].toByte()).put(rgb[2].toByte()).put(255.toByte())
             }
         }
-        photoMarkers.add(c2w, intr, buf, tw, th, sceneDepth)
+        photoMarkers.add(c2w, anchor, intr, buf, tw, th, sceneDepth)
     }
 
     /** Typical distance to the scene for this photo: depth samples, else feature points, else 1 m. */
@@ -551,51 +580,45 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     // ------------------------------------------------------------------
-    // UI
+    // UI: one status pill, the shutter, undo and "Fertig"
 
-    private fun updateStats() {
-        binding.statsText.text = getString(R.string.capture_stats, recorder.frameCount, recorder.pointCount)
+    private fun notice(text: String) {
+        noticeText = text
+        noticeUntilMs = SystemClock.uptimeMillis() + NOTICE_MS
+        binding.statusText.text = text
+        binding.statusText.setTextColor(WARN_COLOR)
     }
 
-    private fun updateTracking(state: TrackingState, stable: Boolean, reason: TrackingFailureReason, tooFast: Boolean) {
-        binding.trackingText.text = when {
-            stable && tooFast -> getString(R.string.too_fast)
-            stable -> getString(R.string.tracking_ok)
-            state == TrackingState.TRACKING || reason == TrackingFailureReason.NONE -> getString(R.string.tracking_init)
-            else -> getString(R.string.tracking_lost, reasonText(reason))
+    private fun updateUi(stable: Boolean, state: TrackingState, reason: TrackingFailureReason, tooFast: Boolean) {
+        val photos = recorder.frameCount
+        val notice = noticeText?.takeIf { SystemClock.uptimeMillis() < noticeUntilMs }
+        val warning = when {
+            notice != null -> notice
+            !stable && (state == TrackingState.TRACKING || reason == TrackingFailureReason.NONE) ->
+                getString(R.string.tracking_init)
+            !stable -> getString(R.string.tracking_lost, reasonText(reason))
+            tooFast -> getString(R.string.too_fast)
+            liveSharp == false -> getString(R.string.sharpness_blurry)
+            else -> null
         }
+        val status = warning ?: when {
+            photos == 0 && autoCapture -> getString(R.string.status_auto_start)
+            photos == 0 -> getString(R.string.status_manual_start)
+            autoCapture -> getString(R.string.status_auto_count, resources.getQuantityString(R.plurals.photos, photos, photos))
+            else -> resources.getQuantityString(R.plurals.photos, photos, photos)
+        }
+        binding.statusText.text = status
+        binding.statusText.setTextColor(if (warning != null) WARN_COLOR else 0xFFFFFFFF.toInt())
         binding.captureButton.isEnabled = stable && !finishing
-        updateStats()
+        binding.undoButton.isEnabled = photos > 0 && !finishing
+        binding.undoButton.alpha = if (photos > 0) 1f else 0.35f
     }
 
-    /** Coverage dome and blur indicator. */
-    private fun updateQuality(cameraPos: FloatArray?, sharp: Boolean?) {
+    /** Coverage dome in the corner and as progress ring around the shutter. */
+    private fun updateCoverage(cameraPos: FloatArray?) {
         val s = coverage.snapshot(cameraPos)
-        binding.coverageView.update(s)
-        binding.coverageText.text = getString(R.string.coverage_text, s.covered, s.total)
-        binding.sharpnessText.visibility = if (sharp == null) View.GONE else View.VISIBLE
-        if (sharp != null) {
-            binding.sharpnessText.setText(if (sharp) R.string.sharpness_ok else R.string.sharpness_blurry)
-            binding.sharpnessText.setTextColor(if (sharp) 0xFF69F0AE.toInt() else 0xFFFF5252.toInt())
-        }
-    }
-
-    private fun updateOverlap(ov: Float?) {
-        val v = binding.overlapText
-        if (ov == null || !showPhotos) {
-            v.visibility = View.GONE
-            return
-        }
-        val pct = (ov * 100f).toInt()
-        v.visibility = View.VISIBLE
-        v.text = getString(if (ov < 0.4f) R.string.overlap_low else R.string.overlap_text, pct)
-        v.setTextColor(
-            when {
-                ov < 0.4f -> 0xFFFF5252.toInt()  // gap ahead: take a photo
-                ov <= 0.85f -> 0xFF69F0AE.toInt() // recommended range
-                else -> 0xFFFFD740.toInt()        // very similar to the last photo
-            }
-        )
+        if (binding.coverageView.visibility == View.VISIBLE) binding.coverageView.update(s)
+        binding.captureButton.progress = s.covered.toFloat() / s.total
     }
 
     private fun reasonText(r: TrackingFailureReason): String = when (r) {
@@ -621,6 +644,8 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         private const val STABLE_TRACKING_NS = 500_000_000L
         private const val MAX_TRACKING_GAP_NS = 300_000_000L
         private const val MANUAL_WAIT_NS = 1_500_000_000L
+        private const val NOTICE_MS = 2500L
+        private const val WARN_COLOR = 0xFFFFD740.toInt()
 
         fun distance(a: Pose, b: Pose): Float {
             val dx = a.tx() - b.tx()

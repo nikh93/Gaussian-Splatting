@@ -47,6 +47,16 @@ class AppSettings(context: Context) {
         get() = prefs.getInt("photo_resolution", RES_MAX)
         set(v) = prefs.edit().putInt("photo_resolution", v).apply()
 
+    /** the photos as frames in the room while capturing */
+    var showPhotos: Boolean
+        get() = prefs.getBoolean("show_photos", true)
+        set(v) = prefs.edit().putBoolean("show_photos", v).apply()
+
+    /** the small coverage dome in the corner of the capture screen */
+    var showCoverage: Boolean
+        get() = prefs.getBoolean("show_coverage", true)
+        set(v) = prefs.edit().putBoolean("show_coverage", v).apply()
+
     val isServerConfigured: Boolean get() = host.isNotBlank()
 
     companion object {

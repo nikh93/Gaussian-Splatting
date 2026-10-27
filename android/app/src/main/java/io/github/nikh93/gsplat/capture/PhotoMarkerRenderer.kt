@@ -1,6 +1,9 @@
 package io.github.nikh93.gsplat.capture
 
 import android.opengl.GLES30
+import android.opengl.Matrix
+import com.google.ar.core.Anchor
+import com.google.ar.core.TrackingState
 import io.github.nikh93.gsplat.util.GlUtil
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -12,14 +15,21 @@ import kotlin.math.abs
  * (wire pyramid) with the photo's thumbnail on its image plane. This makes gaps and
  * the overlap between neighbouring photos visible while capturing.
  *
- * All methods run on the GL thread.
+ * Every marker hangs on an ARCore [Anchor] created at the photo's camera pose. When
+ * ARCore corrects its map (drift, loop closure) the anchor moves with the real scene,
+ * so the marker stays where the photo was taken instead of floating away with the
+ * world origin. The geometry is therefore stored in camera space.
+ *
+ * All methods run on the thread that owns the GL context.
  */
 class PhotoMarkerRenderer {
 
     private class Marker(
-        val lines: FloatBuffer,  // 8 line segments, xyz
-        val quad: FloatBuffer,   // triangle strip, xyz + uv
+        val lines: FloatBuffer,  // 8 line segments, xyz in camera space
+        val quad: FloatBuffer,   // triangle strip, xyz in camera space + uv
         val texture: Int,
+        val anchor: Anchor?,
+        /** current camera-to-world pose: the anchor's while it is tracked */
         val c2w: FloatArray,
         val intr: Intrinsics,
         val sceneDepth: Float,
@@ -36,6 +46,7 @@ class PhotoMarkerRenderer {
     private var tMvp = 0
     private var tAlpha = 0
     private var tTex = 0
+    private val mvp = FloatArray(16)
 
     val count: Int get() = markers.size
 
@@ -53,21 +64,22 @@ class PhotoMarkerRenderer {
     }
 
     /**
-     * Adds a photo. [c2w] column major camera pose (OpenGL axes, sensor aligned),
-     * [thumb] RGBA pixels of size tw x th, [sceneDepth] typical distance to the scene.
+     * Adds a photo. [c2w] column major camera pose (OpenGL axes, sensor aligned), [anchor]
+     * an anchor at that pose (null if ARCore could not create one), [thumb] RGBA pixels of
+     * size tw x th, [sceneDepth] typical distance to the scene.
      */
-    fun add(c2w: FloatArray, intr: Intrinsics, thumb: ByteBuffer, tw: Int, th: Int, sceneDepth: Float) {
+    fun add(c2w: FloatArray, anchor: Anchor?, intr: Intrinsics, thumb: ByteBuffer, tw: Int, th: Int, sceneDepth: Float) {
         val size = MARKER_DEPTH
         // image plane corners in camera space (row 0 of the image = top = +y)
         val hx = intr.width * 0.5f / intr.fx * size
         val hy = intr.height * 0.5f / intr.fy * size
         val cx = (intr.width * 0.5f - intr.cx) / intr.fx * size
         val cy = -(intr.height * 0.5f - intr.cy) / intr.fy * size
-        val tl = toWorld(c2w, cx - hx, cy + hy, -size)
-        val tr = toWorld(c2w, cx + hx, cy + hy, -size)
-        val bl = toWorld(c2w, cx - hx, cy - hy, -size)
-        val br = toWorld(c2w, cx + hx, cy - hy, -size)
-        val apex = toWorld(c2w, 0f, 0f, 0f)
+        val tl = floatArrayOf(cx - hx, cy + hy, -size)
+        val tr = floatArrayOf(cx + hx, cy + hy, -size)
+        val bl = floatArrayOf(cx - hx, cy - hy, -size)
+        val br = floatArrayOf(cx + hx, cy - hy, -size)
+        val apex = floatArrayOf(0f, 0f, 0f)
         val lines = GlUtil.floatBuffer(
             floatArrayOf(
                 *apex, *tl, *apex, *tr, *apex, *bl, *apex, *br,
@@ -94,7 +106,26 @@ class PhotoMarkerRenderer {
         GLES30.glTexImage2D(
             GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, tw, th, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, thumb
         )
-        markers.add(Marker(lines, quad, tex[0], c2w.copyOf(), intr, sceneDepth))
+        markers.add(Marker(lines, quad, tex[0], anchor, c2w.copyOf(), intr, sceneDepth))
+    }
+
+    /** Removes the latest photo (undo). */
+    fun removeLast() {
+        val m = markers.removeLastOrNull() ?: return
+        m.anchor?.detach()
+        GLES30.glDeleteTextures(1, intArrayOf(m.texture), 0)
+    }
+
+    fun clear() {
+        while (markers.isNotEmpty()) removeLast()
+    }
+
+    /** Follows ARCore's corrections: copies the anchor poses (call once per frame). */
+    fun updatePoses() {
+        for (m in markers) {
+            val a = m.anchor ?: continue
+            if (a.trackingState == TrackingState.TRACKING) a.pose.toMatrix(m.c2w, 0)
+        }
     }
 
     fun draw(viewProj: FloatArray) {
@@ -105,12 +136,13 @@ class PhotoMarkerRenderer {
 
         // thumbnails
         GLES30.glUseProgram(texProgram)
-        GLES30.glUniformMatrix4fv(tMvp, 1, false, viewProj, 0)
         GLES30.glUniform1i(tTex, 0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glEnableVertexAttribArray(tPos)
         GLES30.glEnableVertexAttribArray(tUv)
         for ((i, m) in markers.withIndex()) {
+            Matrix.multiplyMM(mvp, 0, viewProj, 0, m.c2w, 0)
+            GLES30.glUniformMatrix4fv(tMvp, 1, false, mvp, 0)
             GLES30.glUniform1f(tAlpha, if (i == markers.size - 1) 0.9f else 0.65f)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, m.texture)
             m.quad.position(0)
@@ -124,10 +156,11 @@ class PhotoMarkerRenderer {
 
         // frustums: older photos cyan, the latest one yellow
         GLES30.glUseProgram(lineProgram)
-        GLES30.glUniformMatrix4fv(lMvp, 1, false, viewProj, 0)
         GLES30.glLineWidth(3f)
         GLES30.glEnableVertexAttribArray(lPos)
         for ((i, m) in markers.withIndex()) {
+            Matrix.multiplyMM(mvp, 0, viewProj, 0, m.c2w, 0)
+            GLES30.glUniformMatrix4fv(lMvp, 1, false, mvp, 0)
             if (i == markers.size - 1) GLES30.glUniform4f(lColor, 1f, 0.85f, 0.1f, 1f)
             else GLES30.glUniform4f(lColor, 0.2f, 0.85f, 1f, 0.8f)
             m.lines.position(0)

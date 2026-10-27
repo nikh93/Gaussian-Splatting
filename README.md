@@ -157,35 +157,42 @@ Alternativ `android/` in Android Studio öffnen und starten.
 
 ### Ablauf
 
-1. **Neue Aufnahme**: ARCore verfolgt die Position des Handys. Langsam um das Objekt herumgehen,
-   aus mehreren Höhen und Winkeln. Mit **Foto** wird ausgelöst. Der **Auto**-Modus ist
-   standardmäßig aus. Eingeschaltet macht er ein Foto, sobald die Überlappung mit dem letzten
-   Foto unter 70 % fällt und das Handy ruhig gehalten wird, höchstens eines pro Sekunde.
-   60 bis 200 Fotos sind ein guter Wert.
-   **Jedes Foto erscheint im AR-Bild an seiner Aufnahmeposition** als Kamerarahmen mit dem
-   Vorschaubild, das letzte Foto ist gelb markiert. So sieht man, welche Bereiche schon abgedeckt
-   sind. Oben steht die geschätzte **Überlappung** des aktuellen Bildausschnitts mit dem letzten
-   Foto: grün im empfohlenen Bereich bis 85 %, rot unter 40 % (dann ein Foto machen), gelb, wenn
-   sich das Bild kaum vom letzten unterscheidet. Der Schalter **Fotos** blendet die Rahmen aus.
+1. **Neue Aufnahme** fragt zuerst alle Optionen ab: Auslösen (manuell oder automatisch),
+   Foto-Auflösung, ob die gemachten Fotos im Raum und der Abdeckungskreis angezeigt werden und
+   ob ARCore-Tiefendaten aufgezeichnet werden. Danach zeigt der **Fotomodus** nur noch das
+   Kamerabild, immer im Hochformat: oben eine Statuszeile (Anzahl Fotos oder was gerade nicht
+   stimmt), unten links **Letztes Foto verwerfen**, in der Mitte der Auslöser, rechts **Fertig**.
+   Langsam um das Objekt herumgehen, aus mehreren Höhen und Winkeln, 60 bis 200 Fotos.
+   Im **Automatik**-Modus entsteht ein Foto, sobald die Überlappung mit dem letzten Foto unter
+   70 % fällt und das Handy ruhig gehalten wird, höchstens eines pro Sekunde.
+   **Jedes Foto bleibt im Kamerabild an seiner Aufnahmeposition stehen** als Kamerarahmen mit
+   dem Vorschaubild, das letzte ist gelb markiert. Jeder Rahmen hängt an einem ARCore-Anker:
+   korrigiert ARCore seine Karte, wandert der Rahmen mit der echten Szene mit.
 
-   **Abdeckung**: Der Kreis oben rechts zeigt von oben gesehen, aus welchen Richtungen das
-   Objekt schon fotografiert ist: der äußere Ring von unten bzw. auf Objekthöhe (bis 15°), der
-   mittlere schräg von oben (15–45°), die Mitte steil von oben. Jeder Ring ist in Sektoren
-   geteilt (12, 12 und 6), grün heißt abgedeckt. Der gelbe Punkt ist die aktuelle Position, das
-   erste Foto liegt unten. Den Objektmittelpunkt schätzt die App als den Punkt, auf den alle
-   Blickachsen zeigen. Ziel: alle 30 Richtungen grün.
+   ARCore und das Rendern laufen auf dem Hauptthread im Takt des Displays (wie bei SceneView).
+   Mit einem eigenen GL-Thread bekam ARCore auf dem Galaxy A56 die Bewegungssensoren nur alle
+   160 ms gebündelt, und das Tracking fiel mehrmals pro Sekunde aus. Das Log enthält dazu jede
+   Sekunde eine Zeile `tracking stats: x of y camera frames tracked`.
+
+   **Abdeckung**: Der grüne Bogen um den Auslöser zeigt, welcher Anteil der Blickrichtungen
+   schon fotografiert ist. Der Kreis oben rechts zeigt das genauer, von oben gesehen: der äußere
+   Ring von unten bzw. auf Objekthöhe (bis 15°), der mittlere schräg von oben (15–45°), die
+   Mitte steil von oben. Jeder Ring ist in Sektoren geteilt (12, 12 und 6), grün heißt
+   abgedeckt. Der gelbe Punkt ist die aktuelle Position, das erste Foto liegt unten. Den
+   Objektmittelpunkt schätzt die App als den Punkt, auf den alle Blickachsen zeigen. Ziel: alle
+   30 Richtungen grün.
 
    **Schärfe**: Jedes Foto wird auf Bewegungsunschärfe geprüft (Varianz des Laplace-Operators
    auf der Helligkeit). Weil der Wert von der Szene abhängt, vergleicht die App mit dem Median
    der letzten Kamerabilder derselben Aufnahme. Liegt ein Foto unter 60 % davon, wird es
-   verworfen und beim nächsten Kamerabild erneut versucht. Ein Tipp auf **Foto** wartet bis zu
-   1,5 Sekunden auf ein scharfes Bild und speichert danach notfalls ein unscharfes (mit Hinweis).
-   Oben steht live „Bild scharf“ bzw. „Bild unscharf – ruhiger halten“.
-2. Pro Foto werden gespeichert: das CPU-Kamerabild (JPEG, Auflösung im Zahnradmenü unter
-   **Foto-Auflösung**, Standard: die größte, die ARCore anbietet, meist 1920×1080), die
+   verworfen und beim nächsten Kamerabild erneut versucht. Ein Tipp auf den Auslöser wartet
+   bis zu 1,5 Sekunden auf ein scharfes Bild und speichert danach notfalls ein unscharfes (mit
+   Hinweis in der Statuszeile, das sich mit **Letztes Foto verwerfen** wieder entfernen lässt).
+2. Pro Foto werden gespeichert: das CPU-Kamerabild (JPEG, Auflösung in den Aufnahme-Optionen,
+   Standard: die größte, die ARCore anbietet, meist 1920×1080), die
    Kamera-Pose (`Camera.getPose()`, an der Sensor-Ausrichtung des Bildes ausgerichtet), die
    Intrinsik des Bildes (`getImageIntrinsics()`) und, falls das Gerät die ARCore Depth API
-   kann (**Tiefe**), eingefärbte 3D-Punkte aus dem Tiefenbild. Dazu kommen die
+   kann und es eingeschaltet ist, eingefärbte 3D-Punkte aus dem Tiefenbild. Dazu kommen die
    ARCore-Feature-Punkte. Daraus entsteht `points3d.ply`, die Startpunktwolke für das Training.
 3. **Fertig** → Projektseite: **Hochladen & trainieren** legt am Server einen Job an, lädt
    alle Dateien hoch und startet das Training. Fortschritt, PSNR und Anzahl der Gaussians
@@ -222,8 +229,9 @@ dort wird auch die blickabhängige Farbe (Spherical Harmonics) berechnet. Er öf
 
 - **Logs exportieren**: schreibt das Log der App (inkl. der ARCore-Meldungen) mit Gerät,
   Android- und ARCore-Version in eine Textdatei und öffnet das Teilen-Menü.
-- **Foto-Auflösung**: Standard (ARCore-Vorgabe, meist 640×480), Mittel (ab 1280×720) oder
-  Maximal.
+
+Die Foto-Auflösung (Standard 640×480, Mittel ab 1280×720, Maximal) wird vor jeder Aufnahme
+mit den anderen Optionen abgefragt.
 
 ### Worauf es bei Gaussian Splatting ankommt
 
@@ -233,7 +241,7 @@ Kurz zusammengefasst, was die App dafür tut und was (noch) nicht:
 |---|---|
 | Kameraposen pro Foto | ARCore-Posen, ohne Nachoptimierung (siehe unten) |
 | Rundum-Abdeckung aus mehreren Höhen | Abdeckungskreis mit 30 Richtungen |
-| 60–80 % Überlappung | Überlappungsanzeige, Auto-Modus bei < 70 % |
+| 60–80 % Überlappung | Fotos als verankerte Rahmen im Raum, Automatik bei < 70 % |
 | Scharfe Fotos | Schärfeprüfung, unscharfe Bilder werden verworfen |
 | Hohe Auflösung | größte ARCore-CPU-Auflösung (Kamera-Vollauflösung parallel zu ARCore ginge nur über die Shared-Camera-API) |
 | Startpunktwolke | ARCore-Feature-Punkte und optional Tiefenpunkte |

@@ -12,6 +12,13 @@
         <item name="android:windowBackground">@color/black</item>
     </style>
 
+    <style name="SetupHeading">
+        <item name="android:layout_marginTop">20dp</item>
+        <item name="android:layout_marginBottom">4dp</item>
+        <item name="android:textAppearance">?attr/textAppearanceTitleSmall</item>
+        <item name="android:textColor">?attr/colorPrimary</item>
+    </style>
+
     <style name="OverlayText">
         <item name="android:textColor">@color/white</item>
         <item name="android:shadowColor">@color/black</item>

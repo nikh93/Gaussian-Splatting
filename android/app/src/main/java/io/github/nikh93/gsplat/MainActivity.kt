@@ -11,12 +11,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import io.github.nikh93.gsplat.capture.CaptureActivity
+import io.github.nikh93.gsplat.capture.CaptureSetupActivity
 import io.github.nikh93.gsplat.data.Capture
 import io.github.nikh93.gsplat.data.CaptureRepository
 import io.github.nikh93.gsplat.databinding.ActivityMainBinding
@@ -66,7 +65,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.newCaptureButton.setOnClickListener {
             saveSettings()
-            startActivity(Intent(this, CaptureActivity::class.java))
+            startActivity(Intent(this, CaptureSetupActivity::class.java))
         }
         binding.openFileButton.setOnClickListener { openDocument.launch(arrayOf("*/*")) }
     }
@@ -86,22 +85,7 @@ class MainActivity : AppCompatActivity() {
             exportLogs()
             true
         }
-        R.id.action_photo_resolution -> {
-            choosePhotoResolution()
-            true
-        }
         else -> super.onOptionsItemSelected(item)
-    }
-
-    private fun choosePhotoResolution() {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.photo_resolution)
-            .setSingleChoiceItems(R.array.photo_resolutions, settings.photoResolution) { dialog, which ->
-                settings.photoResolution = which
-                dialog.dismiss()
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
     }
 
     private fun exportLogs() {

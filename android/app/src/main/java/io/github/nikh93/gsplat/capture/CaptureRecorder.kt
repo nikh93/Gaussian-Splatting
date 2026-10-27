@@ -59,10 +59,6 @@ class CaptureRecorder(private val capture: Capture, private val repo: CaptureRep
         private set
     @Volatile var pointCount = 0
         private set
-    @Volatile var preview: FloatArray = FloatArray(0) // xyzrgb for the AR overlay
-        private set
-    @Volatile var previewVersion = 0
-        private set
 
     val pendingJobs: Int get() = pending.get()
 
@@ -105,13 +101,35 @@ class CaptureRecorder(private val capture: Capture, private val repo: CaptureRep
                 if (depth != null) addDepthPoints(depth, c2w, image, imgIntr)
                 colorFeaturePoints(c2w, image, imgIntr)
                 pointCount = numPoints
-                updatePreview()
                 if (frames.size % 10 == 1) writeTransforms()
                 capture.frames = frames.size
                 capture.points = numPoints
                 repo.save(capture)
             } catch (e: Exception) {
                 Log.e(TAG, "failed to store frame", e)
+            } finally {
+                pending.decrementAndGet()
+            }
+        }
+    }
+
+    /**
+     * Drops the latest photo (undo): its image file and its entry in transforms.json.
+     * Points it already contributed stay; they only seed the training.
+     */
+    fun removeLast() {
+        if (frameCount == 0) return
+        frameCount--
+        pending.incrementAndGet()
+        worker.execute {
+            try {
+                val f = frames.removeLastOrNull() ?: return@execute
+                File(capture.dir, f.file).delete()
+                writeTransforms()
+                capture.frames = frames.size
+                repo.save(capture)
+            } catch (e: Exception) {
+                Log.e(TAG, "failed to remove frame", e)
             } finally {
                 pending.decrementAndGet()
             }
@@ -211,25 +229,6 @@ class CaptureRecorder(private val capture: Capture, private val repo: CaptureRep
             featureColored.add(id)
             addPoint(p[0], p[1], p[2], (rgb[0] shl 16) or (rgb[1] shl 8) or rgb[2])
         }
-    }
-
-    private fun updatePreview() {
-        val maxPreview = 30_000
-        val step = if (numPoints > maxPreview) numPoints / maxPreview + 1 else 1
-        val n = numPoints / step
-        val out = FloatArray(n * 6)
-        for (k in 0 until n) {
-            val i = k * step
-            out[k * 6] = px[i * 3]
-            out[k * 6 + 1] = px[i * 3 + 1]
-            out[k * 6 + 2] = px[i * 3 + 2]
-            val c = pc[i]
-            out[k * 6 + 3] = ((c shr 16) and 0xFF) / 255f
-            out[k * 6 + 4] = ((c shr 8) and 0xFF) / 255f
-            out[k * 6 + 5] = (c and 0xFF) / 255f
-        }
-        preview = out
-        previewVersion++
     }
 
     // ------------------------------------------------------------------

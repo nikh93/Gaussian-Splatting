@@ -41,6 +41,24 @@ class CoverageTracker {
         if (fallbackCenter == null) {
             fallbackCenter = floatArrayOf(pos[0] + fwd[0] * sceneDepth, pos[1] + fwd[1] * sceneDepth, pos[2] + fwd[2] * sceneDepth)
         }
+        updateCenter()
+    }
+
+    /** Forgets the latest photo (undo). */
+    @Synchronized
+    fun removeLast() {
+        if (positions.isEmpty()) return
+        positions.removeAt(positions.size - 1)
+        axes.removeAt(axes.size - 1)
+        if (positions.isEmpty()) {
+            fallbackCenter = null
+            center = null
+        } else {
+            updateCenter()
+        }
+    }
+
+    private fun updateCenter() {
         val c = estimateCenter() ?: fallbackCenter!!
         center = c
         azimuthOrigin = azimuth(positions[0], c)

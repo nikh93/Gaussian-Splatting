@@ -11,9 +11,6 @@
             <item
                 android:id="@+id/action_export_logs"
                 android:title="@string/export_logs" />
-            <item
-                android:id="@+id/action_photo_resolution"
-                android:title="@string/photo_resolution" />
         </menu>
     </item>
 </menu>

@@ -83,6 +83,20 @@ class CaptureQualityTest {
         assertTrue(s.covered in 1..5)
     }
 
+    @Test
+    fun undoFreesTheCellAgain() {
+        val tracker = CoverageTracker()
+        for (i in 0 until 6) tracker.addPhoto(lookAt(cameraAround(i * 30f, 0f), obj), 0.8f)
+        assertEquals(6, tracker.snapshot(null).covered)
+        tracker.removeLast()
+        assertEquals(5, tracker.snapshot(null).covered)
+        repeat(5) { tracker.removeLast() }
+        assertEquals(0, tracker.snapshot(null).covered)
+        tracker.removeLast() // nothing left: no crash
+        tracker.addPhoto(lookAt(cameraAround(90f, 0f), obj), 0.8f)
+        assertEquals(1, tracker.snapshot(null).covered)
+    }
+
     private fun image(w: Int, h: Int, f: (Int, Int) -> Int): ByteBuffer {
         val b = ByteBuffer.allocate(w * h)
         for (y in 0 until h) for (x in 0 until w) b.put(y * w + x, f(x, y).coerceIn(0, 255).toByte())

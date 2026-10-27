@@ -32,8 +32,13 @@
             android:name=".capture.CaptureActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="false"
-            android:screenOrientation="locked"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.Gsplat.Fullscreen" />
+
+        <activity
+            android:name=".capture.CaptureSetupActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
         <activity
             android:name=".ProjectActivity"

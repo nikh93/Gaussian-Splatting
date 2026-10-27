@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Photo mode: the camera image fills the screen, the controls stay out of the way.
+     All options are chosen beforehand in CaptureSetupActivity. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/black">
 
-    <android.opengl.GLSurfaceView
+    <SurfaceView
         android:id="@+id/surface"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
@@ -17,148 +18,72 @@
         android:alpha="0"
         android:background="@color/white" />
 
-    <LinearLayout
+    <FrameLayout
         android:id="@+id/topPanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:background="@color/overlay"
-        android:orientation="vertical"
         android:padding="12dp">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
+        <!-- photo count, or what is wrong right now -->
         <TextView
-            android:id="@+id/trackingText"
-            style="@style/OverlayText"
-            android:layout_width="match_parent"
+            android:id="@+id/statusText"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/tracking_init"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/statsText"
-            style="@style/OverlayText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/bg_pill"
+            android:paddingStart="14dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="6dp"
+            android:textColor="@color/white"
             android:textSize="14sp" />
-
-        <TextView
-            android:id="@+id/overlapText"
-            style="@style/OverlayText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="15sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/sharpnessText"
-            style="@style/OverlayText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/coverageText"
-            style="@style/OverlayText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="14sp" />
-        </LinearLayout>
 
         <io.github.nikh93.gsplat.capture.CoverageView
             android:id="@+id/coverageView"
-            android:layout_width="104dp"
-            android:layout_height="104dp"
-            android:layout_marginStart="8dp" />
-        </LinearLayout>
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:layout_gravity="top|end" />
+    </FrameLayout>
 
-        <TextView
-            android:id="@+id/hintText"
-            style="@style/OverlayText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="@string/capture_hint"
-            android:textSize="12sp" />
-    </LinearLayout>
-
-    <LinearLayout
+    <FrameLayout
         android:id="@+id/bottomPanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:background="@color/overlay"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="12dp">
+        android:paddingTop="16dp"
+        android:paddingBottom="28dp">
 
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
+        <ImageButton
+            android:id="@+id/undoButton"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_gravity="center_vertical|start"
+            android:layout_marginStart="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/undo_photo"
+            android:src="@drawable/ic_undo" />
 
-            <com.google.android.material.materialswitch.MaterialSwitch
-                android:id="@+id/autoSwitch"
-                style="@style/OverlayText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/auto_capture" />
-
-            <com.google.android.material.materialswitch.MaterialSwitch
-                android:id="@+id/photosSwitch"
-                style="@style/OverlayText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="@string/show_photos" />
-
-            <com.google.android.material.materialswitch.MaterialSwitch
-                android:id="@+id/depthSwitch"
-                style="@style/OverlayText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/depth_points" />
-        </LinearLayout>
-
-        <com.google.android.material.button.MaterialButton
+        <io.github.nikh93.gsplat.capture.ShutterButton
             android:id="@+id/captureButton"
-            android:layout_width="96dp"
-            android:layout_height="96dp"
-            android:insetLeft="0dp"
-            android:insetTop="0dp"
-            android:insetRight="0dp"
-            android:insetBottom="0dp"
-            android:text="@string/capture_photo"
-            android:textSize="16sp"
-            app:cornerRadius="48dp" />
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:layout_gravity="center"
+            android:contentDescription="@string/capture_photo" />
 
-        <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/doneButton"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="end|center_vertical"
-                android:text="@string/capture_done" />
-        </FrameLayout>
-    </LinearLayout>
+        <TextView
+            android:id="@+id/doneButton"
+            android:layout_width="wrap_content"
+            android:layout_height="56dp"
+            android:layout_gravity="center_vertical|end"
+            android:layout_marginEnd="32dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:gravity="center"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:text="@string/capture_done"
+            android:textColor="@color/white"
+            android:textSize="18sp" />
+    </FrameLayout>
 </FrameLayout>
