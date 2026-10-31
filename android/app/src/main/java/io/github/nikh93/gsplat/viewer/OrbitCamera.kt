@@ -48,6 +48,18 @@ class OrbitCamera {
         pitch = 0.35f
     }
 
+    /** Current orbit: target (3), distance, yaw, pitch. */
+    @Synchronized
+    fun orbitState(): FloatArray = floatArrayOf(target[0], target[1], target[2], distance, yaw, pitch)
+
+    @Synchronized
+    fun restoreOrbit(t: FloatArray, dist: Float, yawRad: Float, pitchRad: Float) {
+        t.copyInto(target, 0, 0, 3)
+        distance = dist.coerceIn(minDistance, maxDistance)
+        yaw = yawRad
+        pitch = pitchRad.coerceIn(-1.55f, 1.55f)
+    }
+
     @Synchronized
     fun rotate(dxPixels: Float, dyPixels: Float, viewHeight: Int) {
         val k = 3.5f / max(viewHeight, 1)

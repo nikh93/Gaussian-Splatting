@@ -28,6 +28,10 @@ import java.io.File
  *
  * Controls: one finger orbits, two fingers pan, pinch zooms, double tap resets.
  * The panel offers reset, auto rotation, background colour, up axis, splat size and FOV.
+ *
+ * Every change (camera, centre, toolbar) is stored per model in [ModelViewStore] and
+ * restored when the model is opened again, until "Ansicht zurücksetzen" brings back the
+ * original view.
  */
 class ViewerActivity : AppCompatActivity() {
 
@@ -36,6 +40,8 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var renderer: SplatRenderer
     private var splatCount = 0
     @Volatile private var modelFile: File? = null
+    private lateinit var store: ModelViewStore
+    private var stateReady = false // the stored state was applied; changes are saved from now on
     private var backgroundIndex = 0
     private val backgrounds = arrayOf(
         floatArrayOf(0f, 0f, 0f),
@@ -52,6 +58,7 @@ class ViewerActivity : AppCompatActivity() {
         Insets.pad(binding.topBar, top = true)
         Insets.pad(binding.controlPanel, bottom = true)
 
+        store = ModelViewStore(this)
         renderer = SplatRenderer(camera)
         renderer.onFirstFrame = { runOnUiThread { binding.loadingPanel.visibility = View.GONE } }
         binding.surface.setEGLContextClientVersion(3)
@@ -71,6 +78,7 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        saveState()
         binding.surface.onPause()
         super.onPause()
     }
@@ -99,6 +107,8 @@ class ViewerActivity : AppCompatActivity() {
                 }
                 splatCount = scene.count
                 camera.setHome(scene.center, scene.radius)
+                modelFile?.let { f -> store.load(f)?.let { applyState(it) } }
+                stateReady = true
                 renderer.setScene(scene)
                 binding.arButton.isEnabled = true
                 startInfoUpdates()
@@ -132,7 +142,7 @@ class ViewerActivity : AppCompatActivity() {
             binding.controlPanel.visibility =
                 if (binding.controlPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }
-        binding.resetButton.setOnClickListener { camera.reset() }
+        binding.resetButton.setOnClickListener { resetView() }
         binding.arButton.setOnClickListener {
             val f = modelFile ?: return@setOnClickListener
             startActivity(
@@ -141,19 +151,74 @@ class ViewerActivity : AppCompatActivity() {
                     .putExtra(ArViewerActivity.EXTRA_UP_AXIS, camera.upAxis)
             )
         }
-        binding.autoRotateButton.addOnCheckedChangeListener { _, checked -> renderer.autoRotate = checked }
+        binding.autoRotateButton.addOnCheckedChangeListener { _, checked ->
+            renderer.autoRotate = checked
+            saveState()
+        }
         binding.backgroundButton.setOnClickListener {
             backgroundIndex = (backgroundIndex + 1) % backgrounds.size
             renderer.background = backgrounds[backgroundIndex]
+            saveState()
         }
         updateUpAxisLabel()
         binding.upAxisButton.setOnClickListener {
             camera.upAxis = (camera.upAxis + 1) % 4
             camera.reset()
             updateUpAxisLabel()
+            saveState()
         }
-        binding.scaleSlider.addOnChangeListener { _, value, _ -> renderer.splatScale = value }
-        binding.fovSlider.addOnChangeListener { _, value, _ -> camera.fovDeg = value }
+        binding.scaleSlider.addOnChangeListener { _, value, fromUser ->
+            renderer.splatScale = value
+            if (fromUser) saveState()
+        }
+        binding.fovSlider.addOnChangeListener { _, value, fromUser ->
+            camera.fovDeg = value
+            if (fromUser) saveState()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // per model view state
+
+    private fun applyState(st: ModelViewState) {
+        camera.upAxis = st.upAxis.coerceIn(0, 3)
+        updateUpAxisLabel()
+        st.target?.takeIf { it.size == 3 && st.distance > 0f }?.let {
+            camera.restoreOrbit(it, st.distance, st.yaw, st.pitch)
+        }
+        binding.fovSlider.value = st.fovDeg.coerceIn(binding.fovSlider.valueFrom, binding.fovSlider.valueTo)
+        binding.scaleSlider.value = st.splatScale.coerceIn(binding.scaleSlider.valueFrom, binding.scaleSlider.valueTo)
+        backgroundIndex = st.backgroundIndex.coerceIn(0, backgrounds.size - 1)
+        renderer.background = backgrounds[backgroundIndex]
+        binding.autoRotateButton.isChecked = st.autoRotate
+        renderer.autoRotate = st.autoRotate
+    }
+
+    /** Stores the current viewer parameters (the AR parameters of the model are kept). */
+    private fun saveState() {
+        val f = modelFile ?: return
+        if (!stateReady) return
+        val orbit = camera.orbitState()
+        store.update(f) { st ->
+            st.target = floatArrayOf(orbit[0], orbit[1], orbit[2])
+            st.distance = orbit[3]
+            st.yaw = orbit[4]
+            st.pitch = orbit[5]
+            st.upAxis = camera.upAxis
+            st.fovDeg = camera.fovDeg
+            st.splatScale = renderer.splatScale
+            st.backgroundIndex = backgroundIndex
+            st.autoRotate = renderer.autoRotate
+        }
+    }
+
+    /** "Ansicht zurücksetzen": forget everything stored for this model, back to the original. */
+    private fun resetView() {
+        stateReady = false
+        modelFile?.let { store.clear(it) }
+        applyState(ModelViewState())
+        camera.reset()
+        stateReady = true
     }
 
     private fun updateUpAxisLabel() {
@@ -170,7 +235,7 @@ class ViewerActivity : AppCompatActivity() {
         })
         val tapDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                camera.reset()
+                resetView()
                 return true
             }
         })
@@ -218,6 +283,8 @@ class ViewerActivity : AppCompatActivity() {
             lastX = cx
             lastY = cy
             lastPointers = pointers
+            // camera moved: remember it for the next time the model is opened
+            if (ev.actionMasked == MotionEvent.ACTION_UP) saveState()
             true
         }
     }

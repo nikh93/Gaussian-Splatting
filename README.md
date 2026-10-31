@@ -233,6 +233,12 @@ dort wird auch die blickabhängige Farbe (Spherical Harmonics) berechnet. Er öf
 | „Sichtfeld“ | Brennweite (20° bis 110°) |
 | „AR / VR“ | Modell im Raum platzieren (siehe unten) |
 
+**Einstellungen bleiben pro Modell erhalten.** Kameraposition und Drehpunkt (Zentrum),
+Hochachse, Sichtfeld, Splat-Größe, Hintergrund und Auto-Rotation werden bei jeder Änderung
+für dieses Modell gespeichert und beim nächsten Öffnen wiederhergestellt. In der AR-Ansicht gilt
+das für die Höhe des Modellzentrums, den Maßstab und die Drehung. Erst **„Ansicht
+zurücksetzen“** (oder ein Doppeltipp) löscht die gespeicherten Werte und lädt das Original.
+
 ### AR- und Cardboard-Ansicht
 
 „AR / VR“ im 3D-Viewer öffnet das Modell im Raum. Der Bildschirm läuft im Querformat, weil
@@ -256,7 +262,10 @@ Cardboard das braucht.
    **QR-Codes** auf der Brille, damit die Darstellung zur Linse passt. Über das Zahnrad lässt
    sich jederzeit eine andere Brille scannen, das X beendet den Cardboard-Modus.
 
-„Neu platzieren“ beginnt wieder bei Schritt 1.
+„Neu platzieren“ beginnt wieder bei Schritt 1. Höhe, Maßstab und Drehung der letzten Platzierung
+werden beim nächsten Mal vorgeschlagen; der Strich steht nach dem ersten „Platzieren“ also schon
+auf der gespeicherten Höhe. Die Drehung bezieht sich auf die Blickrichtung beim Platzieren,
+weil ARCore die Himmelsrichtung bei jeder Sitzung neu festlegt.
 
 ---
 

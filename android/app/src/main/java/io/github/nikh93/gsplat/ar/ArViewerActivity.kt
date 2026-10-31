@@ -43,6 +43,7 @@ import io.github.nikh93.gsplat.capture.DisplayRotationHelper
 import io.github.nikh93.gsplat.capture.EglCore
 import io.github.nikh93.gsplat.databinding.ActivityArViewerBinding
 import io.github.nikh93.gsplat.util.Insets
+import io.github.nikh93.gsplat.viewer.ModelViewStore
 import io.github.nikh93.gsplat.viewer.OrbitCamera
 import io.github.nikh93.gsplat.viewer.SplatDrawer
 import io.github.nikh93.gsplat.viewer.SplatLoader
@@ -69,6 +70,9 @@ import kotlin.math.pow
  *     head pose from ARCore); the gear button scans the viewer's QR code.
  *
  * ARCore and GL run on the main thread with [EglCore], like the capture screen (see there).
+ *
+ * Height of the model centre, scale and turn are stored per model ([ModelViewStore]) and
+ * offered again the next time; "Ansicht zurücksetzen" in the 3D viewer forgets them.
  */
 class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographer.FrameCallback {
 
@@ -102,6 +106,10 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
     private var floorHit: Pose? = null
     private var height = 0f
     private var yawDeg = 0f
+    private var facingYawDeg = 0f // yaw that turns the model towards the user at placement
+    private lateinit var store: ModelViewStore
+    private var modelFile: File? = null
+    private var savedHeight = -1f
     private var modelScale = 1f
     private var vr = false
     private var pendingVrAfterScan = false
@@ -145,6 +153,7 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
         rotationHelper = DisplayRotationHelper(this)
         sensorManager = getSystemService(SensorManager::class.java)
         upAxis = intent.getIntExtra(EXTRA_UP_AXIS, 0)
+        store = ModelViewStore(this)
 
         try {
             Initialize.initialize(applicationContext)
@@ -157,9 +166,10 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
         binding.resetButton.setOnClickListener { resetPlacement() }
         binding.backButton.setOnClickListener { finish() }
         binding.realSizeButton.setOnClickListener { binding.scaleSlider.value = 0f }
-        binding.scaleSlider.addOnChangeListener { _, value, _ ->
+        binding.scaleSlider.addOnChangeListener { _, value, fromUser ->
             modelScale = 10f.pow(value)
             updateSizeText()
+            if (fromUser) saveArState()
         }
         binding.cardboardButton.setOnClickListener { startCardboard() }
         binding.vrCloseButton.setOnClickListener { setVr(false) }
@@ -179,7 +189,16 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
         val path = intent.getStringExtra(EXTRA_PATH) ?: run { finish(); return }
         lifecycleScope.launch {
             try {
-                val s = withContext(Dispatchers.IO) { SplatLoader.load(File(path)) }
+                val file = File(path)
+                val s = withContext(Dispatchers.IO) { SplatLoader.load(file) }
+                // the parameters of the last AR session with this model
+                modelFile = file
+                store.load(file)?.let { st ->
+                    savedHeight = st.arHeight
+                    binding.scaleSlider.value = log10(st.arScale.coerceAtLeast(1e-3f))
+                        .coerceIn(binding.scaleSlider.valueFrom, binding.scaleSlider.valueTo)
+                    yawDeg = st.arYawOffset // turned towards the user at placement
+                }
                 scene = s
                 sceneUploaded = false
                 updateUi()
@@ -251,6 +270,7 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
 
     override fun onPause() {
         super.onPause()
+        saveArState()
         running = false
         Choreographer.getInstance().removeFrameCallback(this)
         rotationHelper.onPause()
@@ -271,12 +291,26 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
     // ------------------------------------------------------------------
     // placement
 
+    /** Stores height, scale and turn of the model (the viewer parameters are kept). */
+    private fun saveArState() {
+        val f = modelFile ?: return
+        val placedYaw = yawDeg - facingYawDeg
+        val h = if (stage == Stage.SEARCH) savedHeight else height
+        store.update(f) { st ->
+            st.arScale = modelScale
+            if (h >= 0f) st.arHeight = h
+            if (stage != Stage.SEARCH) st.arYawOffset = placedYaw
+        }
+    }
+
     private fun resetPlacement() {
         floorAnchor?.detach()
         modelAnchor?.detach()
         floorAnchor = null
         modelAnchor = null
-        height = 0f
+        if (stage == Stage.HEIGHT || stage == Stage.PLACED) savedHeight = height
+        yawDeg -= facingYawDeg
+        facingYawDeg = 0f
         setVr(false)
         stage = Stage.SEARCH
         updateUi()
@@ -300,7 +334,15 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
                 floorHit = hit?.hitPose
                 if (placeRequested && hit != null) {
                     floorAnchor = hit.createAnchor()
-                    height = 0f
+                    height = if (savedHeight >= 0f) savedHeight else 0f
+                    // turn the model towards the user, plus the turn chosen last time
+                    val fp = hit.hitPose
+                    val cam = frame.camera.pose
+                    val offset = yawDeg - facingYawDeg
+                    facingYawDeg = Math.toDegrees(
+                        atan2((cam.tx() - fp.tx()).toDouble(), (cam.tz() - fp.tz()).toDouble())
+                    ).toFloat()
+                    yawDeg = facingYawDeg + offset
                     stage = Stage.HEIGHT
                 }
             }
@@ -309,10 +351,9 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
                 modelAnchor = s.createAnchor(Pose.makeTranslation(fp.tx(), fp.ty() + height, fp.tz()))
                 floorAnchor?.detach()
                 floorAnchor = null
-                // turn the model so that its +Z side faces the user
-                val cam = frame.camera.pose
-                yawDeg = Math.toDegrees(atan2((cam.tx() - fp.tx()).toDouble(), (cam.tz() - fp.tz()).toDouble())).toFloat()
+                savedHeight = height
                 stage = Stage.PLACED
+                saveArState()
             }
             Stage.PLACED -> {}
         }
@@ -517,6 +558,7 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
             scaleDetector.onTouchEvent(ev)
             if (ev.pointerCount == 1) {
                 when (ev.actionMasked) {
+                    MotionEvent.ACTION_UP -> if (stage != Stage.SEARCH) saveArState()
                     MotionEvent.ACTION_DOWN -> {
                         lastX = ev.x
                         lastY = ev.y
