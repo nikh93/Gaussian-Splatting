@@ -115,10 +115,11 @@ class SplatSorter(private val scene: SplatScene, private val count: Int) {
 
     /** RGBA8 colour per splat for the camera position of [v] (same basis as the trainer). */
     private fun evalColors(v: FloatArray, out: ByteBuffer) {
-        // camera centre in model space: -R^T t
-        val cx = -(v[0] * v[12] + v[1] * v[13] + v[2] * v[14])
-        val cy = -(v[4] * v[12] + v[5] * v[13] + v[6] * v[14])
-        val cz = -(v[8] * v[12] + v[9] * v[13] + v[10] * v[14])
+        // camera centre in model space: -(sR)^T t / s^2 for v = [sR | t] (uniform model scale s)
+        val s2 = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).let { if (it > 0f) it else 1f }
+        val cx = -(v[0] * v[12] + v[1] * v[13] + v[2] * v[14]) / s2
+        val cy = -(v[4] * v[12] + v[5] * v[13] + v[6] * v[14]) / s2
+        val cz = -(v[8] * v[12] + v[9] * v[13] + v[10] * v[14]) / s2
         val deg = scene.shDegree
         val bands = (deg + 1) * (deg + 1) - 1
         val base = scene.shBase!!

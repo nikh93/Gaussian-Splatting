@@ -1,0 +1,6 @@
+# produced by build_cardboard_sdk.sh
+src/
+lib/
+aar/
+cardboard-sdk.aar
+.version

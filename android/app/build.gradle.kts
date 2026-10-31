@@ -9,10 +9,33 @@ android {
 
     defaultConfig {
         applicationId = "io.github.nikh93.gsplat"
-        minSdk = 24
+        minSdk = 26 // Cardboard SDK
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
+        ndk {
+            // the Cardboard SDK ships these ABIs
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_static")
+            }
+        }
+    }
+
+    // JNI bridge of the Cardboard SDK (see cardboard/build_cardboard_sdk.sh)
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+    packaging {
+        jniLibs {
+            // provided by the Cardboard AAR and referenced by the JNI bridge
+            pickFirsts += "**/libGfxPluginCardboard.so"
+        }
     }
 
     buildTypes {
@@ -45,4 +68,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("com.google.android.material:material:1.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // Google Cardboard SDK, built from the official release by cardboard/build_cardboard_sdk.sh,
+    // plus the dependencies of its AAR (QR code scanner, device parameter protos)
+    implementation(files("../cardboard/cardboard-sdk.aar"))
+    implementation("com.google.android.gms:play-services-vision:20.1.3")
+    implementation("com.google.protobuf:protobuf-javalite:3.19.4")
+    implementation("org.jspecify:jspecify:1.0.0")
 }

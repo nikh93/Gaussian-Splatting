@@ -19,6 +19,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - name: Build the Google Cardboard SDK (official release, not on Maven)
+        working-directory: android
+        run: bash cardboard/build_cardboard_sdk.sh
       - name: Build debug APK
         working-directory: android
         run: |
