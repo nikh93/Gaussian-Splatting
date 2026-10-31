@@ -106,7 +106,7 @@
     <string name="ar_loading">Lade Modell…</string>
     <string name="ar_search">Boden suchen: Handy langsam über den Boden bewegen</string>
     <string name="ar_aim">Zielkreis auf den Boden richten und „Platzieren“ drücken</string>
-    <string name="ar_height">Höhe des Modellzentrums: %1$.2f m – nach oben/unten wischen, dann „Platzieren“</string>
+    <string name="ar_height">Höhe des Modellzentrums: %1$.2f m – hoch/runter wischen: Höhe · links/rechts wischen: drehen · dann „Platzieren“</string>
     <string name="ar_placed">Modell verankert – herumlaufen möglich · waagrecht wischen: drehen · Regler: Größe</string>
     <string name="ar_lost">Tracking unterbrochen – Handy ruhig halten</string>
     <string name="ar_size">Maßstab %1$s · Modellgröße ca. %2$.2f m</string>

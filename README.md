@@ -249,6 +249,8 @@ Cardboard das braucht.
 2. **Platzieren**: Der Bodenpunkt wird fixiert. Mit dem Finger **nach oben wischen** lässt einen
    senkrechten Strich nach oben wachsen. Er markiert, wo das **Zentrum** des Modells sitzen soll
    (die Höhe wird angezeigt, das Modell ist als Vorschau zu sehen). Nach unten wischen senkt ihn.
+   **Nach links oder rechts wischen dreht das Modell** schon in diesem Schritt. Die erste
+   Bewegung einer Wischgeste entscheidet, ob sie die Höhe ändert oder dreht.
 3. **Platzieren** erneut: Das Modellzentrum wird mit einem ARCore-Anker an der Spitze des
    Strichs verankert. Ab jetzt ist **nur noch das Modell** zu sehen, kein Kamerabild mehr.
    ARCore verfolgt das Handy aber weiter, man kann also um das Modell herumlaufen, und es

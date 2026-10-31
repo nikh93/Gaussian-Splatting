@@ -53,6 +53,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.log10
 import kotlin.math.pow
@@ -554,6 +555,10 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
         })
         var lastX = 0f
         var lastY = 0f
+        var totalX = 0f
+        var totalY = 0f
+        // the first movement of a swipe decides: vertical = height, horizontal = turn
+        var axis = AXIS_NONE
         binding.surface.setOnTouchListener { v, ev ->
             scaleDetector.onTouchEvent(ev)
             if (ev.pointerCount == 1) {
@@ -562,19 +567,31 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
                     MotionEvent.ACTION_DOWN -> {
                         lastX = ev.x
                         lastY = ev.y
+                        totalX = 0f
+                        totalY = 0f
+                        axis = AXIS_NONE
                     }
                     MotionEvent.ACTION_MOVE -> {
                         val dx = ev.x - lastX
                         val dy = ev.y - lastY
                         lastX = ev.x
                         lastY = ev.y
+                        totalX += dx
+                        totalY += dy
+                        if (axis == AXIS_NONE && totalX * totalX + totalY * totalY > AXIS_LOCK_PX * AXIS_LOCK_PX) {
+                            axis = if (abs(totalX) > abs(totalY)) AXIS_TURN else AXIS_HEIGHT
+                        }
                         when (stage) {
-                            // swipe up = higher; full screen height = 2 m
-                            Stage.HEIGHT -> {
-                                height = (height - dy / v.height * 2f).coerceIn(0f, 3f)
-                                binding.statusText.text = getString(R.string.ar_height, height)
+                            Stage.HEIGHT -> when (axis) {
+                                // swipe up = higher; full screen height = 2 m
+                                AXIS_HEIGHT -> {
+                                    height = (height - dy / v.height * 2f).coerceIn(0f, 3f)
+                                    binding.statusText.text = getString(R.string.ar_height, height)
+                                }
+                                // swipe left/right = turn; full screen width = one turn
+                                AXIS_TURN -> yawDeg += dx / v.width * 360f
                             }
-                            Stage.PLACED -> if (!vr) yawDeg += dx / v.width * 360f
+                            Stage.PLACED -> if (!vr && axis == AXIS_TURN) yawDeg += dx / v.width * 360f
                             Stage.SEARCH -> {}
                         }
                     }
@@ -582,6 +599,7 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
             } else {
                 lastX = ev.getX(0)
                 lastY = ev.getY(0)
+                axis = AXIS_PINCH // two fingers: scale only
             }
             true
         }
@@ -591,6 +609,11 @@ class ArViewerActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreograp
         private const val TAG = "ArViewer"
         const val EXTRA_PATH = "path"
         const val EXTRA_UP_AXIS = "up_axis"
+        private const val AXIS_NONE = 0
+        private const val AXIS_HEIGHT = 1
+        private const val AXIS_TURN = 2
+        private const val AXIS_PINCH = 3
+        private const val AXIS_LOCK_PX = 24f
         private val TARGET_COLOR = floatArrayOf(1f, 1f, 1f, 0.9f)
         private val FIXED_COLOR = floatArrayOf(0.3f, 0.85f, 1f, 0.9f)
         private val LINE_COLOR = floatArrayOf(1f, 0.85f, 0.1f, 0.95f)

@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write
 
+# a newer push replaces a running build, so an older run cannot overwrite the release
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android:
     name: Android APK
