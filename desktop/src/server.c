@@ -381,7 +381,16 @@ static void handle_create(http_request *req)
     if (len)
         v = json_parse(body, NULL, 0);
     free(body);
+    if (len && !v) {
+        http_respond_error(req, 400, "invalid JSON body");
+        return;
+    }
     j = (job *)calloc(1, sizeof(job));
+    if (!j) {
+        json_free(v);
+        http_respond_error(req, 500, "out of memory");
+        return;
+    }
     gs_mutex_lock(&g_lock);
     {
         time_t now = time(NULL);
@@ -458,6 +467,10 @@ static void handle_start(http_request *req, job *j)
     char *body = http_read_body(req, 1 << 16, &len);
     json_value *v = body && len ? json_parse(body, NULL, 0) : NULL;
     free(body);
+    if (len && !v) {
+        http_respond_error(req, 400, "invalid JSON body");
+        return;
+    }
     job_dir(j, p, sizeof(p), "capture/transforms.json");
     if (!gs_file_exists(p)) {
         json_free(v);

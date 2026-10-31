@@ -63,12 +63,46 @@ class HttpException(val code: Int, message: String) : IOException(message)
 class GsplatClient(private val baseUrl: String, private val token: String?) {
 
     companion object {
-        /** Builds the base URL from a host (IPv4, IPv6, MagicDNS name or full URL) and port. */
+        /**
+         * Builds the base URL from a host (IPv4, IPv6, MagicDNS name or full URL) and port.
+         * A scheme ("http://") and a port typed into the host field ("100.1.2.3:8080",
+         * "[fd7a::1]:8080") are accepted; a port given there wins over [port].
+         */
         fun baseUrl(host: String, port: Int): String {
-            val h = host.trim().trimEnd('/')
-            if (h.startsWith("http://") || h.startsWith("https://")) return h
-            val bracketed = if (h.contains(':') && !h.startsWith("[")) "[$h]" else h
-            return "http://$bracketed:$port"
+            var rest = host.trim().trimEnd('/')
+            var scheme = "http"
+            val sep = rest.indexOf("://")
+            if (sep >= 0) {
+                scheme = rest.substring(0, sep).lowercase()
+                rest = rest.substring(sep + 3)
+            }
+            val slash = rest.indexOf('/')
+            val path = if (slash >= 0) rest.substring(slash) else ""
+            val authority = if (slash >= 0) rest.substring(0, slash) else rest
+            val hostPart: String
+            var portPart = port
+            var explicitPort = false
+            if (authority.startsWith("[")) {
+                // bracketed IPv6, optionally with ":port"
+                val end = authority.indexOf(']')
+                hostPart = if (end > 0) authority.substring(0, end + 1) else "$authority]"
+                if (end > 0 && authority.length > end + 2 && authority[end + 1] == ':') {
+                    portPart = authority.substring(end + 2).toIntOrNull() ?: port
+                    explicitPort = true
+                }
+            } else if (authority.count { it == ':' } == 1) {
+                // IPv4 or name with ":port"
+                hostPart = authority.substringBefore(':')
+                portPart = authority.substringAfter(':').toIntOrNull() ?: port
+                explicitPort = true
+            } else if (authority.contains(':')) {
+                hostPart = "[$authority]" // bare IPv6
+            } else {
+                hostPart = authority
+            }
+            // "https://name" without a port means a reverse proxy on 443, not the server port
+            if (scheme == "https" && !explicitPort) return "$scheme://$hostPart$path"
+            return "$scheme://$hostPart:$portPart$path"
         }
 
         private const val CONNECT_TIMEOUT = 10_000

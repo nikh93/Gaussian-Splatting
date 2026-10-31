@@ -32,11 +32,38 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean("auto_capture_v2", false)
         set(v) = prefs.edit().putBoolean("auto_capture_v2", v).apply()
 
+    /** depth is opt-in (new key): ARCore's depth fails on some phones and slows tracking down */
     var useDepth: Boolean
-        get() = prefs.getBoolean("use_depth", true)
-        set(v) = prefs.edit().putBoolean("use_depth", v).apply()
+        get() = prefs.getBoolean("use_depth_v2", false)
+        set(v) = prefs.edit().putBoolean("use_depth_v2", v).apply()
+
+    /**
+     * Photo resolution: [RES_STANDARD] is ARCore's default camera config (640x480 on most
+     * phones, too coarse for splatting), [RES_MEDIUM] the smallest config of at least 720p,
+     * [RES_MAX] the largest. The tracking problems on the Galaxy A56 turned out to be
+     * independent of the resolution, so the largest is the default again.
+     */
+    var photoResolution: Int
+        get() = prefs.getInt("photo_resolution", RES_MAX)
+        set(v) = prefs.edit().putInt("photo_resolution", v).apply()
+
+    /** the photos as frames in the room while capturing */
+    var showPhotos: Boolean
+        get() = prefs.getBoolean("show_photos", true)
+        set(v) = prefs.edit().putBoolean("show_photos", v).apply()
+
+    /** the small coverage dome in the corner of the capture screen */
+    var showCoverage: Boolean
+        get() = prefs.getBoolean("show_coverage", true)
+        set(v) = prefs.edit().putBoolean("show_coverage", v).apply()
 
     val isServerConfigured: Boolean get() = host.isNotBlank()
+
+    companion object {
+        const val RES_STANDARD = 0
+        const val RES_MEDIUM = 1
+        const val RES_MAX = 2
+    }
 
     fun client(): GsplatClient = GsplatClient(GsplatClient.baseUrl(host, port), token.ifBlank { null })
 }

@@ -38,6 +38,16 @@ android {
         }
     }
 
+    // Fixed debug key in the repo, so APKs from CI and from local builds install over each other.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -58,7 +68,7 @@ android {
 }
 
 dependencies {
-    implementation("com.google.ar:core:1.46.0")
+    implementation("com.google.ar:core:1.57.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
@@ -68,6 +78,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("com.google.android.material:material:1.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    testImplementation("junit:junit:4.13.2")
 
     // Google Cardboard SDK, built from the official release by cardboard/build_cardboard_sdk.sh,
     // plus the dependencies of its AAR (QR code scanner, device parameter protos)

@@ -4,6 +4,8 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -13,11 +15,12 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import io.github.nikh93.gsplat.capture.CaptureActivity
+import io.github.nikh93.gsplat.capture.CaptureSetupActivity
 import io.github.nikh93.gsplat.data.Capture
 import io.github.nikh93.gsplat.data.CaptureRepository
 import io.github.nikh93.gsplat.databinding.ActivityMainBinding
 import io.github.nikh93.gsplat.databinding.ItemCaptureBinding
+import io.github.nikh93.gsplat.util.LogExport
 import io.github.nikh93.gsplat.viewer.ViewerActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -62,7 +65,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.newCaptureButton.setOnClickListener {
             saveSettings()
-            startActivity(Intent(this, CaptureActivity::class.java))
+            startActivity(Intent(this, CaptureSetupActivity::class.java))
         }
         binding.openFileButton.setOnClickListener { openDocument.launch(arrayOf("*/*")) }
     }
@@ -70,6 +73,29 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refresh()
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main_menu, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_export_logs -> {
+            exportLogs()
+            true
+        }
+        else -> super.onOptionsItemSelected(item)
+    }
+
+    private fun exportLogs() {
+        lifecycleScope.launch {
+            try {
+                LogExport.share(this@MainActivity)
+            } catch (e: Exception) {
+                toast(getString(R.string.export_logs_failed, e.message ?: e.javaClass.simpleName))
+            }
+        }
     }
 
     override fun onPause() {

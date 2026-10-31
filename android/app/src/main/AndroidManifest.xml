@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- the capture screen reads the IMU at the fastest rate, see CaptureActivity.registerImu -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -32,8 +34,13 @@
             android:name=".capture.CaptureActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="false"
-            android:screenOrientation="locked"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.Gsplat.Fullscreen" />
+
+        <activity
+            android:name=".capture.CaptureSetupActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
         <activity
             android:name=".ProjectActivity"

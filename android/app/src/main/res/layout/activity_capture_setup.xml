@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everything about a capture is decided here, so the photo mode itself can stay clean. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:id="@+id/scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/setup_guide"
+                android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+            <TextView
+                style="@style/SetupHeading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/setup_trigger" />
+
+            <RadioGroup
+                android:id="@+id/triggerGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <RadioButton
+                    android:id="@+id/triggerManual"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/setup_trigger_manual" />
+
+                <RadioButton
+                    android:id="@+id/triggerAuto"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/setup_trigger_auto" />
+            </RadioGroup>
+
+            <TextView
+                style="@style/SetupHeading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/photo_resolution" />
+
+            <RadioGroup
+                android:id="@+id/resolutionGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <RadioButton
+                    android:id="@+id/resStandard"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/res_standard" />
+
+                <RadioButton
+                    android:id="@+id/resMedium"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/res_medium" />
+
+                <RadioButton
+                    android:id="@+id/resMax"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/res_max" />
+            </RadioGroup>
+
+            <TextView
+                style="@style/SetupHeading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/setup_display" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/photosSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/setup_show_photos" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/coverageSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/setup_show_coverage" />
+
+            <TextView
+                style="@style/SetupHeading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/setup_extras" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/depthSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/setup_depth" />
+        </LinearLayout>
+    </ScrollView>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/startButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="20dp"
+        android:text="@string/setup_start" />
+</LinearLayout>

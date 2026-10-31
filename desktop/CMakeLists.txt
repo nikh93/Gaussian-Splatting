@@ -74,12 +74,18 @@ endforeach()
 if(GS_WITH_CUDA)
   find_program(GS_NVCC nvcc HINTS $ENV{CUDA_PATH}/bin /usr/local/cuda/bin)
   if(GS_NVCC)
+    # only device code is compiled to PTX, so a host compiler newer than the
+    # toolkit knows about (e.g. a recent MSVC with an older CUDA) is harmless
+    set(GS_NVCC_FLAGS "")
+    if(MSVC)
+      set(GS_NVCC_FLAGS -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
+    endif()
     set(PTX_DIR ${CMAKE_CURRENT_BINARY_DIR}/ptx)
     add_custom_command(OUTPUT ${PTX_DIR}/gsplat.ptx ${PTX_DIR}/gsplat_test.ptx
       COMMAND ${CMAKE_COMMAND} -E make_directory ${PTX_DIR}
-      COMMAND ${GS_NVCC} -ptx -O3 -arch=compute_${GS_CUDA_ARCH} -DTILE=16
+      COMMAND ${GS_NVCC} ${GS_NVCC_FLAGS} -ptx -O3 -arch=compute_${GS_CUDA_ARCH} -DTILE=16
               ${CMAKE_CURRENT_SOURCE_DIR}/kernels/gsplat.cu -o ${PTX_DIR}/gsplat.ptx
-      COMMAND ${GS_NVCC} -ptx -O3 -arch=compute_${GS_CUDA_ARCH} -DTILE=16 -DGS_FULL_TILES
+      COMMAND ${GS_NVCC} ${GS_NVCC_FLAGS} -ptx -O3 -arch=compute_${GS_CUDA_ARCH} -DTILE=16 -DGS_FULL_TILES
               ${CMAKE_CURRENT_SOURCE_DIR}/kernels/gsplat.cu -o ${PTX_DIR}/gsplat_test.ptx
       DEPENDS ${KERNEL_FILES}
       COMMENT "nvcc: building PTX for compute_${GS_CUDA_ARCH}")
