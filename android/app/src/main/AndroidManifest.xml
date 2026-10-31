@@ -50,6 +50,14 @@
             android:name=".ServerJobsActivity"
             android:exported="false" />
 
+        <!-- landscape: required by the Cardboard viewer -->
+        <activity
+            android:name=".ar.ArViewerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.Gsplat.Fullscreen" />
+
         <activity
             android:name=".viewer.ViewerActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"

@@ -87,12 +87,7 @@ class OrbitCamera {
 
     /** Rotation that maps the selected up axis of the model onto +Y. */
     private fun upModel(): FloatArray {
-        Matrix.setIdentityM(model, 0)
-        when (upAxis) {
-            1 -> Matrix.rotateM(model, 0, 180f, 0f, 0f, 1f)
-            2 -> Matrix.rotateM(model, 0, -90f, 1f, 0f, 0f)
-            3 -> Matrix.rotateM(model, 0, 90f, 1f, 0f, 0f)
-        }
+        upAxisMatrix(upAxis, model)
         return model
     }
 
@@ -111,6 +106,18 @@ class OrbitCamera {
         val ez = t[2] + distance * cos(pitch) * cos(yaw)
         Matrix.setLookAtM(view, 0, ex, ey, ez, t[0], t[1], t[2], 0f, 1f, 0f)
         Matrix.multiplyMM(out, 0, view, 0, m, 0)
+    }
+
+    companion object {
+        /** Rotation (column major) mapping up axis 0:+Y, 1:-Y, 2:+Z, 3:-Z of a model onto +Y. */
+        fun upAxisMatrix(upAxis: Int, out: FloatArray) {
+            Matrix.setIdentityM(out, 0)
+            when (upAxis) {
+                1 -> Matrix.rotateM(out, 0, 180f, 0f, 0f, 1f)
+                2 -> Matrix.rotateM(out, 0, -90f, 1f, 0f, 0f)
+                3 -> Matrix.rotateM(out, 0, 90f, 1f, 0f, 0f)
+            }
+        }
     }
 
     @Synchronized

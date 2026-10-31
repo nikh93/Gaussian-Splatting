@@ -101,4 +101,22 @@
     <string name="viewer_fov">Sichtfeld</string>
     <string name="viewer_help">1 Finger: drehen · 2 Finger: verschieben · Pinch: zoomen · Doppeltipp: zurücksetzen</string>
     <string name="viewer_load_failed">Modell konnte nicht geladen werden: %1$s</string>
+    <!-- AR / VR viewer -->
+    <string name="viewer_ar">AR / VR</string>
+    <string name="ar_loading">Lade Modell…</string>
+    <string name="ar_search">Boden suchen: Handy langsam über den Boden bewegen</string>
+    <string name="ar_aim">Zielkreis auf den Boden richten und „Platzieren“ drücken</string>
+    <string name="ar_height">Höhe des Modellzentrums: %1$.2f m – nach oben/unten wischen, dann „Platzieren“</string>
+    <string name="ar_placed">Modell verankert – herumlaufen möglich · waagrecht wischen: drehen · Regler: Größe</string>
+    <string name="ar_lost">Tracking unterbrochen – Handy ruhig halten</string>
+    <string name="ar_size">Maßstab %1$s · Modellgröße ca. %2$.2f m</string>
+    <string name="ar_place">Platzieren</string>
+    <string name="ar_replace">Neu platzieren</string>
+    <string name="ar_back">Zurück</string>
+    <string name="ar_scale">Maßstab</string>
+    <string name="ar_real_size">1:1</string>
+    <string name="ar_cardboard">Cardboard</string>
+    <string name="ar_exit_vr">Cardboard beenden</string>
+    <string name="ar_scan_qr">Cardboard-QR-Code scannen</string>
+    <string name="ar_cardboard_unavailable">Cardboard SDK nicht verfügbar: %1$s</string>
 </resources>

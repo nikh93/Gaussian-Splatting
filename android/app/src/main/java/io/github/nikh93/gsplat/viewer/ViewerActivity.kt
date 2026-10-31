@@ -1,6 +1,7 @@
 package io.github.nikh93.gsplat.viewer
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.net.Uri
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -12,6 +13,7 @@ import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import io.github.nikh93.gsplat.R
+import io.github.nikh93.gsplat.ar.ArViewerActivity
 import io.github.nikh93.gsplat.databinding.ActivityViewerBinding
 import io.github.nikh93.gsplat.util.Insets
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,7 @@ class ViewerActivity : AppCompatActivity() {
     private val camera = OrbitCamera()
     private lateinit var renderer: SplatRenderer
     private var splatCount = 0
+    @Volatile private var modelFile: File? = null
     private var backgroundIndex = 0
     private val backgrounds = arrayOf(
         floatArrayOf(0f, 0f, 0f),
@@ -89,6 +92,7 @@ class ViewerActivity : AppCompatActivity() {
                         uri != null -> copyToCache(uri)
                         else -> throw IllegalArgumentException("keine Datei angegeben")
                     }
+                    modelFile = file
                     SplatLoader.load(file) { p ->
                         runOnUiThread { binding.loadingText.text = getString(R.string.viewer_loading) + " ${(p * 100).toInt()}%" }
                     }
@@ -96,6 +100,7 @@ class ViewerActivity : AppCompatActivity() {
                 splatCount = scene.count
                 camera.setHome(scene.center, scene.radius)
                 renderer.setScene(scene)
+                binding.arButton.isEnabled = true
                 startInfoUpdates()
             } catch (e: Exception) {
                 binding.loadingText.text = getString(R.string.viewer_load_failed, e.message ?: e.javaClass.simpleName)
@@ -128,6 +133,14 @@ class ViewerActivity : AppCompatActivity() {
                 if (binding.controlPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }
         binding.resetButton.setOnClickListener { camera.reset() }
+        binding.arButton.setOnClickListener {
+            val f = modelFile ?: return@setOnClickListener
+            startActivity(
+                Intent(this, ArViewerActivity::class.java)
+                    .putExtra(ArViewerActivity.EXTRA_PATH, f.absolutePath)
+                    .putExtra(ArViewerActivity.EXTRA_UP_AXIS, camera.upAxis)
+            )
+        }
         binding.autoRotateButton.addOnCheckedChangeListener { _, checked -> renderer.autoRotate = checked }
         binding.backgroundButton.setOnClickListener {
             backgroundIndex = (backgroundIndex + 1) % backgrounds.size

@@ -145,12 +145,18 @@ Fertige Builds (APK und Windows-Server) baut GitHub Actions bei jedem Push. Sie 
 ## 3. Android-App (`android/`)
 
 Voraussetzungen: ein [ARCore-fähiges Gerät](https://developers.google.com/ar/devices),
-Android 7.0 oder neuer, Android Studio (Ladybug oder neuer) bzw. JDK 17 und Android SDK 35.
+Android 8.0 oder neuer (Cardboard SDK), Android Studio (Ladybug oder neuer) bzw. JDK 17 und
+Android SDK 35.
+
+Das [Google Cardboard SDK](https://github.com/googlevr/cardboard) gibt es nicht als
+Maven-Paket. Vor dem ersten Build baut ein Skript es einmalig aus dem offiziellen Release
+(v1.36.0). Unter Windows geht das in der Git Bash:
 
 ```bash
 cd android
-./gradlew assembleDebug          # APK: app/build/outputs/apk/debug/app-debug.apk
-./gradlew installDebug           # direkt auf das angeschlossene Handy
+bash cardboard/build_cardboard_sdk.sh   # einmalig: Cardboard SDK bauen (braucht ANDROID_HOME)
+./gradlew assembleDebug                 # APK: app/build/outputs/apk/debug/app-debug.apk
+./gradlew installDebug                  # direkt auf das angeschlossene Handy
 ```
 
 Alternativ `android/` in Android Studio öffnen und starten.
@@ -225,6 +231,32 @@ dort wird auch die blickabhängige Farbe (Spherical Harmonics) berechnet. Er öf
 | „Hochachse“ | +Y / −Y / +Z / −Z (für Modelle aus anderen Tools, z. B. COLMAP: −Y) |
 | „Splat-Größe“ | Splats skalieren (0.1× bis 2×) |
 | „Sichtfeld“ | Brennweite (20° bis 110°) |
+| „AR / VR“ | Modell im Raum platzieren (siehe unten) |
+
+### AR- und Cardboard-Ansicht
+
+„AR / VR“ im 3D-Viewer öffnet das Modell im Raum. Der Bildschirm läuft im Querformat, weil
+Cardboard das braucht.
+
+1. **Boden suchen**: Das Handy langsam über den Boden bewegen, bis der weiße Zielkreis
+   erscheint. Er liegt dort auf dem Boden, wohin die Bildmitte zeigt.
+2. **Platzieren**: Der Bodenpunkt wird fixiert. Mit dem Finger **nach oben wischen** lässt einen
+   senkrechten Strich nach oben wachsen. Er markiert, wo das **Zentrum** des Modells sitzen soll
+   (die Höhe wird angezeigt, das Modell ist als Vorschau zu sehen). Nach unten wischen senkt ihn.
+3. **Platzieren** erneut: Das Modellzentrum wird mit einem ARCore-Anker an der Spitze des
+   Strichs verankert. Ab jetzt ist **nur noch das Modell** zu sehen, kein Kamerabild mehr.
+   ARCore verfolgt das Handy aber weiter, man kann also um das Modell herumlaufen, und es
+   bleibt an seiner Stelle.
+4. **Maßstab**: Der Regler skaliert das Modell von 1:100 bis 20:1 (auch per Pinch). **1:1** ist
+   echte Größe, denn Aufnahmen dieser App sind in Metern. Angezeigt wird die ungefähre
+   Modellgröße. Waagrecht wischen dreht das Modell um die senkrechte Achse.
+5. **Cardboard**: Das Bild wird stereoskopisch für eine Google-Cardboard-Brille dargestellt,
+   mit Linsenentzerrung aus dem offiziellen Cardboard SDK. Die Kopfbewegung kommt dabei von
+   ARCore (volle Raumposition, nicht nur Drehung). Beim ersten Mal startet der Scan des
+   **QR-Codes** auf der Brille, damit die Darstellung zur Linse passt. Über das Zahnrad lässt
+   sich jederzeit eine andere Brille scannen, das X beendet den Cardboard-Modus.
+
+„Neu platzieren“ beginnt wieder bei Schritt 1.
 
 ---
 
